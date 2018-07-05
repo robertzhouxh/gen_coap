@@ -3,8 +3,8 @@
 %%! -pa _build/default/lib/gen_coap/ebin/
 
 main([]) ->
-    query("coap://coap.me:5683").
-%    query("coap://127.0.0.1:5683").
+%   query("coap://coap.me:5683/.well-known/core").
+    query("coap://127.0.0.1:5683/.well-known/core").
 
 query(Uri) ->
     {ok, content, Data} = coap_client:request(get, Uri),
