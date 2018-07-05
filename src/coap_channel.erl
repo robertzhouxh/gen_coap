@@ -12,19 +12,19 @@
 -module(coap_channel).
 -behaviour(gen_server).
 
--export([start_link/4]).
+-export([start_link/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3, terminate/2]).
 -export([ping/1, send/2, send_request/3, send_message/3, send_response/3, close/1]).
 
 -define(VERSION, 1).
 -define(MAX_MESSAGE_ID, 65535). % 16-bit number
 
--record(state, {sup, sock, cid, tokens, trans, nextmid, res, rescnt}).
+-record(state, {sup, sock, cid, tokens, trans, nextmid, responders}).
 
 -include("coap.hrl").
 
-start_link(SupPid, SockPid, ChId, ReSup) ->
-    gen_server:start_link(?MODULE, [SupPid, SockPid, ChId, ReSup], []).
+start_link(SupPid, SockPid, ChId) ->
+    gen_server:start_link(?MODULE, [SupPid, SockPid, ChId], []).
 
 ping(Channel) ->
     send_message(Channel, make_ref(), #coap_message{type=con}).
@@ -48,11 +48,11 @@ send_response(Channel, Ref, Message) ->
 close(Pid) ->
     gen_server:cast(Pid, shutdown).
 
-init([SupPid, SockPid, ChId, ReSup]) ->
+init([SupPid, SockPid, ChId]) ->
     % we want to get called upon termination
     process_flag(trap_exit, true),
     {ok, #state{sup=SupPid, sock=SockPid, cid=ChId, tokens=dict:new(),
-        trans=dict:new(), nextmid=first_mid(), res=ReSup, rescnt=0}}.
+        trans=dict:new(), nextmid=first_mid(), responders=[]}}.
 
 handle_call(_Unknown, _From, State) ->
     {reply, unknown_call, State}.
@@ -143,10 +143,12 @@ handle_info({timeout, TrId, Event}, State=#state{trans=Trans}) ->
 handle_info({request_complete, Token}, State=#state{tokens=Tokens}) ->
     Tokens2 = dict:erase(Token, Tokens),
     purge_state(State#state{tokens=Tokens2});
-handle_info({responder_started}, State=#state{rescnt=Count}) ->
-    purge_state(State#state{rescnt=Count+1});
-handle_info({responder_completed}, State=#state{rescnt=Count}) ->
-    purge_state(State#state{rescnt=Count-1});
+handle_info({responder_started, Pid}, State=#state{responders=Responders}) ->
+    purge_state(State#state{responders = lists:usort([Pid|Responders])});
+handle_info({responder_completed, Pid}, State=#state{responders=Responders}) ->
+    purge_state(State#state{responders=lists:delete(Pid, Responders)});
+handle_info({'EXIT', Pid, _Reason}, State = #state{responders = Responders}) ->
+    {noreply, State#state{responders = lists:delete(Pid, Responders)}};
 handle_info(Info, State) ->
     io:fwrite("unexpected massage ~p~n", [Info]),
     {noreply, State}.
@@ -176,10 +178,8 @@ create_transport(TrId, Receiver, State=#state{trans=Trans}) ->
         error -> init_transport(TrId, Receiver, State)
     end.
 
-init_transport(TrId, undefined, #state{sock=Sock, cid=ChId, res=ReSup}) ->
-    coap_transport:init(Sock, ChId, self(), TrId, ReSup, undefined);
 init_transport(TrId, Receiver, #state{sock=Sock, cid=ChId}) ->
-    coap_transport:init(Sock, ChId, self(), TrId, undefined, Receiver).
+    coap_transport:init(Sock, ChId, self(), TrId, Receiver).
 
 update_state(State=#state{trans=Trans}, TrId, undefined) ->
     Trans2 = dict:erase(TrId, Trans),
@@ -188,8 +188,8 @@ update_state(State=#state{trans=Trans}, TrId, TrState) ->
     Trans2 = dict:store(TrId, TrState, Trans),
     {noreply, State#state{trans=Trans2}}.
 
-purge_state(State=#state{tokens=Tokens, trans=Trans, rescnt=Count}) ->
-    case dict:size(Tokens)+dict:size(Trans)+Count of
+purge_state(State=#state{tokens=Tokens, trans=Trans, responders=Responders}) ->
+    case dict:size(Tokens)+dict:size(Trans)+length(Responders)of
         0 -> {stop, normal, State};
         _Else -> {noreply, State}
     end.

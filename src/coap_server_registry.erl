@@ -9,52 +9,71 @@
 
 % registry of server content handlers
 -module(coap_server_registry).
--export([add_handler/3, get_handler/1, get_links/0]).
 
 -behaviour(gen_server).
+
 -export([start_link/0]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3, terminate/2]).
+-export([add_handler/3, get_handler/1, del_handler/2, get_links/0]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2,
+         code_change/3, terminate/2]).
 
--record(state, {reg}).
+-record(state, {}).
 
-add_handler(Prefix, Module, Args) ->
-    gen_server:call(?MODULE, {add_handler, Prefix, Module, Args}).
-
-get_handler(Uri) ->
-    gen_server:call(?MODULE, {get_handler, Uri}).
-
-get_links() ->
-    gen_server:call(?MODULE, {get_links}).
-
+-define(TAB, ?MODULE).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
+add_handler(Prefix, Module, Args) ->
+    gen_server:call(?MODULE, {add_handler, Prefix, Module, Args}).
+
+del_handler(Prefix, Module) ->
+    gen_server:call(?MODULE, {del_handler, Prefix, Module}).
+
+get_handler(Uri) ->
+    unwrap(ets:foldl(
+             fun(Elem = {{Prefix, _}, _}, Found) ->
+                 case lists:prefix(Prefix, Uri) of
+                     true -> one_with_longer_uri(Elem, Found);
+                     false -> Found
+                 end
+             end, undefined, ?TAB)).
+
+get_links() ->
+    ets:foldl(
+        fun({{Prefix, Module}, Args}, Acc) ->
+            Acc ++ get_links(Prefix, Module, Args)
+        end, [], ?TAB).
+
+unwrap({{Prefix, Module}, Args}) ->
+    {Prefix, Module, Args};
+unwrap(undefined) ->
+    undefined.
+
 init(_Args) ->
-    {ok, #state{reg=
-        % RFC 6690, Section 4
-        [{[<<".well-known">>, <<"core">>], coap_server_content, undefined}]
-    }}.
+    _ = ets:new(?TAB, [ordered_set, protected, named_table, {read_concurrency, true}]),
+    % RFC 6690, Section 4
+    true = ets:insert(?TAB, {{[<<".well-known">>, <<"core">>], coap_server_content}, undefined}),
+    {ok, #state{}}.
 
-handle_call({add_handler, Prefix, Module, Args}, _From, State=#state{reg=Reg}) ->
-    NewReg =    case lists:member({Prefix, Module, Args}, Reg) of
-                    true  -> Reg;
-                    false -> [{Prefix, Module, Args}|Reg]
-                end,
-    {reply, ok, State#state{reg=NewReg}};
+handle_call({add_handler, Prefix, Module, Args}, _From, State) ->
+    true = ets:insert(?TAB, {{Prefix, Module}, Args}),
+    {reply, ok, State};
 
+handle_call({del_handler, Prefix, Module}, _From, State) ->
+    true = ets:delete(?TAB, {Prefix, Module}),
+    {reply, ok, State};
 
-handle_call({get_handler, Uri}, _From, State=#state{reg=Reg}) ->
-    {reply, get_handler(Uri, Reg), State};
+handle_call(Req, _From, State) ->
+    error_logger:error_msg("[~s] Unexpected request: ~p", [?MODULE, Req]),
+    {reply, ignore, State}.
 
-handle_call({get_links}, _From, State=#state{reg=Reg}) ->
-    {reply, lists:usort(get_links(Reg)), State}.
-
-
-handle_cast(_Unknown, State) ->
+handle_cast(Msg, State) ->
+    error_logger:error_msg("[~s] Unexpected msg: ~p", [?MODULE, Msg]),
     {noreply, State}.
 
-handle_info(_Unknown, State) ->
+handle_info(Info, State) ->
+    error_logger:error_msg("[~s] Unexpected info: ~p", [?MODULE, Info]),
     {noreply, State}.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -63,29 +82,13 @@ code_change(_OldVsn, State, _Extra) ->
 terminate(_Reason, _State) ->
     ok.
 
-
-get_handler(Uri, Reg) ->
-    lists:foldl(
-        fun(Elem={Prefix, _, _}, Found) ->
-            case lists:prefix(Prefix, Uri) of
-                true -> one_with_longer_uri(Elem, Found);
-                false -> Found
-            end
-        end,
-        undefined, Reg).
-
 % select an entry with a longest prefix
 % this allows user to have one handler for "foo" and another for "foo/bar"
 one_with_longer_uri(Elem1, undefined) -> Elem1;
-one_with_longer_uri(Elem1={Prefix, _, _}, {Match, _, _}) when length(Prefix) > length(Match) -> Elem1;
+one_with_longer_uri(Elem1 = {{Prefix, _}, _}, {{Match, _}, _}) when length(Prefix) > length(Match) -> Elem1;
 one_with_longer_uri(_Elem1, Elem2) -> Elem2.
 
 % ask each handler to provide a link list
-get_links(Reg) ->
-    lists:foldl(
-        fun({Prefix, Module, Args}, Acc) -> Acc++get_links(Prefix, Module, Args) end,
-        [], Reg).
-
 get_links(Prefix, Module, Args) ->
     case erlang:function_exported(Module, coap_discover, 2) of
         % for each pattern ask the handler to provide a list of resources
@@ -93,5 +96,3 @@ get_links(Prefix, Module, Args) ->
         false -> []
     end.
 
-
-% end of file

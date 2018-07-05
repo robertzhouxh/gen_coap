@@ -11,20 +11,21 @@
 % provides caching for atomic multi-block operations
 % provides synchronous callbacks that block until a response is ready
 -module(coap_responder).
+
 -behaviour(gen_server).
 
 -include("coap.hrl").
 
--export([start_link/2, notify/2]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-    terminate/2, code_change/3]).
+-export([start_link/3, notify/2, shutdown/2]).
 
--record(state, {channel, prefix, module, args, insegs, last_response, observer, obseq, obstate, timer}).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+
+-record(state, {channel, cid, prefix, module, args, insegs, last_response, observer, obseq, obstate, timer}).
 
 -define(EXCHANGE_LIFETIME, 247000).
 
-start_link(Channel, Uri) ->
-    gen_server:start_link(?MODULE, [Channel, Uri], []).
+start_link(Channel, ChId, Request) ->
+    gen_server:start_link(?MODULE, [Channel, ChId, Request], []).
 
 notify(Uri, Resource) ->
     case pg2:get_members({coap_observer, Uri}) of
@@ -32,19 +33,26 @@ notify(Uri, Resource) ->
         List -> [gen_server:cast(Pid, Resource) || Pid <- List]
     end.
 
-init([Channel, Uri]) ->
+shutdown(Pid, Reason) ->
+    gen_server:cast(Pid, {shutdown, Reason}).
+
+init([Channel, ChId, Request]) ->
     % the receiver will be determined based on the URI
-    case coap_server_registry:get_handler(Uri) of
+    case coap_server_registry:get_handler(coap_request:uri_path(Request)) of
         {Prefix, Module, Args} ->
-            Channel ! {responder_started},
-            {ok, #state{channel=Channel, prefix=Prefix, module=Module, args=Args,
-                insegs=orddict:new(), obseq=0}};
+            true = link(Channel),
+            Channel ! {responder_started, self()},
+            {ok, #state{channel = Channel, cid = ChId, prefix = Prefix, module = Module, args = Args,
+                insegs = orddict:new(), obseq = 0}};
         undefined ->
             {stop, not_found}
     end.
 
 handle_call(_Msg, _From, State) ->
     {reply, unknown_command, State}.
+
+handle_cast({shutdown, Reason}, State) ->
+    {stop, Reason, State};
 
 handle_cast(_Resource, State=#state{observer=undefined}) ->
     % ignore unexpected notification
@@ -55,8 +63,7 @@ handle_cast({error, Code}, State=#state{observer=Observer}) ->
     {ok, State2} = cancel_observer(Observer, State),
     return_response(Observer, {error, Code}, State2).
 
-handle_info({coap_request, ChId, _Channel, undefined, Request}, State) ->
-    %io:fwrite("-> ~p~n", [Request]),
+handle_info({coap_request, ChId, Channel, undefined, Request}, State = #state{channel = Channel, cid = ChId}) ->
     handle(ChId, Request, State);
 handle_info(cache_expired, State=#state{observer=undefined}) ->
     {stop, normal, State};
@@ -88,12 +95,11 @@ handle_info(Info, State=#state{module=Module, observer=Observer, obstate=ObState
     end.
 
 terminate(_Reason, #state{channel=Channel}) ->
-    Channel ! {responder_completed},
+    Channel ! {responder_completed, self()},
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
-
 
 % handlers
 

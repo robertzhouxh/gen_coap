@@ -26,19 +26,29 @@ start() ->
 start(normal, []) ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-stop(_Pid) ->
+stop(_State) ->
     ok.
 
-
 init([]) ->
-    {ok, {{one_for_all, 3, 10}, [
-        {coap_server_registry,
-            {coap_server_registry, start_link, []},
-            permanent, 5000, worker, []},
-        {coap_channel_sup_sup,
-            {coap_channel_sup_sup, start_link, []},
-            permanent, infinity, supervisor, []}
-    ]}}.
+    {ok, {{one_for_all, 10, 100},
+          [#{id       => coap_server_registry,
+             start    => {coap_server_registry, start_link, []},
+             restart  => permanent,
+             shutdown => 5000,
+             type     => worker,
+             modules  => [coap_server_registry]},
+           #{id       => coap_responder_sup,
+             start    => {coap_responder_sup, start_link, []},
+             restart  => permanent,
+             shutdown => infinity,
+             type     => supervisor,
+             modules  => [coap_responder_sup]},
+           #{id       => coap_channel_sup_sup,
+             start    => {coap_channel_sup_sup, start_link, []},
+             restart  => permanent,
+             shutdown => infinity,
+             type     => supervisor,
+             modules  => [coap_channel_sup_sup]}]}}.
 
 start_udp(Name) ->
     start_udp(Name, ?DEFAULT_COAP_PORT).
