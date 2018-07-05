@@ -12,23 +12,86 @@
 -module(coap_server).
 
 -behaviour(application).
--export([start/0, start/2, stop/1]).
-
 -behaviour(supervisor).
+
+-export([start/0, stop/0]).
+
+-export([start_udp/1, start_udp/2, stop_udp/1, stop_udp/2]).
+-export([start_dtls/2, start_dtls/3, stop_dtls/1, stop_dtls/2]).
+
+%% application callbacks
+-export([start/2, stop/1]).
+
+%% supervisor callbacks
 -export([init/1]).
--export([start_udp/1, start_udp/2, stop_udp/1, start_dtls/2, start_dtls/3, stop_dtls/1, channel_sup/1]).
 
 -include("coap.hrl").
 
-start() ->
-    start(normal, []).
+-define(APP, gen_coap).
 
+start() ->
+    application:start(?APP).
+
+stop() ->
+    application:stop(?APP).
+
+%% Application callbacks
 start(normal, []) ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 stop(_State) ->
     ok.
 
+start_udp(Name) ->
+    start_udp(Name, ?DEFAULT_COAP_PORT).
+
+start_udp(Name, Port) ->
+    MFA = {coap_channel_sup, start_channel, []},
+    Opts = application:get_env(?APP, udp_options, []),
+    start_child(esockd:udp_child_spec(Name, Port, Opts, MFA)).
+
+stop_udp(Name) ->
+    stop_udp(Name, ?DEFAULT_COAP_PORT).
+
+stop_udp(Name, Port) ->
+    stop_server(Name, Port).
+
+start_dtls(Name, DtlsOpts) ->
+    start_dtls(Name, ?DEFAULT_COAPS_PORT, DtlsOpts).
+
+start_dtls(Name, Port, DtlsOpts) ->
+    {ok, _} = application:ensure_all_started(ssl),
+    UdpOpts = application:get_env(?APP, udp_options, []),
+    SslOpts = application:get_env(?APP, ssl_options, []),
+    Opts = [{udp_options, UdpOpts}, {ssl_options, merge_opts(SslOpts, DtlsOpts)}],
+    MFA = {coap_channel_sup, start_channel, []},
+    start_child(esockd:dtls_child_spec(Name, Port, Opts, MFA)).
+
+merge_opts(Defaults, Options) ->
+    lists:foldl(
+      fun({Opt, Val}, Acc) ->
+          lists:keystore(Opt, 1, Acc, {Opt, Val});
+         (Opt, Acc) ->
+          lists:usort([Opt | Acc])
+      end, Defaults, Options).
+
+stop_dtls(Name) ->
+    stop_dtls(Name, ?DEFAULT_COAPS_PORT).
+
+stop_dtls(Name, Port) ->
+    stop_server(Name, Port).
+
+start_child(Spec) ->
+    supervisor:start_child(?MODULE, Spec).
+
+stop_server(Name, Port) ->
+    ChildId = esockd_sup:child_id(Name, Port),
+    case supervisor:terminate_child(?MODULE, ChildId) of
+        ok    -> supervisor:delete_child(?MODULE, ChildId);
+        Error -> Error
+    end.
+
+%% Supervisor callbacks
 init([]) ->
     {ok, {{one_for_all, 10, 100},
           [#{id       => coap_server_registry,
@@ -43,46 +106,10 @@ init([]) ->
              shutdown => infinity,
              type     => supervisor,
              modules  => [coap_responder_sup]},
-           #{id       => coap_channel_sup_sup,
-             start    => {coap_channel_sup_sup, start_link, []},
+           #{id       => coap_channel_sup,
+             start    => {coap_channel_sup, start_link, []},
              restart  => permanent,
              shutdown => infinity,
              type     => supervisor,
-             modules  => [coap_channel_sup_sup]}]}}.
+             modules  => [coap_channel_sup]}]}}.
 
-start_udp(Name) ->
-    start_udp(Name, ?DEFAULT_COAP_PORT).
-
-start_udp(Name, UdpPort) ->
-    supervisor:start_child(?MODULE,
-        {Name,
-            {coap_udp_socket, start_link, [UdpPort, whereis(?MODULE)]},
-            transient, 5000, worker, []}).
-
-stop_udp(Name) ->
-    supervisor:terminate_child(?MODULE, Name),
-    supervisor:delete_child(?MODULE, Name).
-
-
-start_dtls(Name, DtlsOpts) ->
-    start_dtls(Name, ?DEFAULT_COAPS_PORT, DtlsOpts).
-
-start_dtls(Name, DtlsPort, DtlsOpts) ->
-    supervisor:start_child(?MODULE,
-        {Name,
-            {coap_dtls_listen, start_link, [DtlsPort, DtlsOpts]},
-            transient, 5000, worker, []}).
-
-stop_dtls(Name) ->
-    supervisor:terminate_child(?MODULE, Name),
-    supervisor:delete_child(?MODULE, Name).
-
-
-channel_sup(SupPid) -> child(SupPid, coap_channel_sup_sup).
-
-child(SupPid, Id) ->
-    [Pid] = [Pid || {Id1, Pid, _, _} <- supervisor:which_children(SupPid),
-        Id1 =:= Id],
-    Pid.
-
-% end of file

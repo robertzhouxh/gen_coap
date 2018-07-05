@@ -49,7 +49,7 @@ handle_call({get_channel, ChId}, _From, State=#state{chans=Chans, pool=undefined
         {ok, Pid} ->
             {reply, {ok, Pid}, State};
         undefined ->
-            {ok, _, Pid} = coap_channel_sup:start_link(self(), ChId),
+            {ok, Pid} = coap_channel:start_link(self(), ChId),
             {reply, {ok, Pid}, store_channel(ChId, Pid, State)}
     end;
 handle_call({get_channel, ChId}, _From, State=#state{pool=PoolPid}) ->
@@ -77,13 +77,13 @@ handle_info({udp, _Socket, PeerIP, PeerPortNo, Data}, State=#state{chans=Chans, 
     case find_channel(ChId, Chans) of
         % channel found in cache
         {ok, Pid} ->
-            Pid ! {datagram, Data},
+            Pid ! {datagram, self(), Data},
             {noreply, State};
         undefined when is_pid(PoolPid) ->
-            case coap_channel_sup_sup:start_channel(PoolPid, ChId) of
+            case coap_channel_sup:start_channel(self(), ChId) of
                 % new channel created
                 {ok, _, Pid} ->
-                    Pid ! {datagram, Data},
+                    Pid ! {datagram, self(), Data},
                     {noreply, store_channel(ChId, Pid, State)};
                 % drop this packet
                 {error, _} ->
@@ -97,7 +97,7 @@ handle_info({udp, _Socket, PeerIP, PeerPortNo, Data}, State=#state{chans=Chans, 
 handle_info({datagram, {PeerIP, PeerPortNo}, Data}, State=#state{sock=Socket}) ->
     ok = gen_udp:send(Socket, PeerIP, PeerPortNo, Data),
     {noreply, State};
-handle_info({terminated, SupPid, ChId}, State=#state{chans=Chans, pool = PoolId}) ->
+handle_info({terminated, _SupPid, ChId}, State=#state{chans=Chans, pool = PoolId}) ->
     Chans2 = dict:erase(ChId, Chans),
 %%  exit(SupPid, normal),
     coap_channel_sup_sup:delete_channel(PoolId, ChId),

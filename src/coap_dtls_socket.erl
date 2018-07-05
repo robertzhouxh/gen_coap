@@ -29,30 +29,31 @@ get_channel(Pid, ChId) ->
     gen_server:call(Pid, {get_channel, ChId}).
 
 init([connect, Host, Port]) ->
-    {ok, Sock} = ssl:connect(Host, Port,  [binary, {protocol, dtls}]),
+    Ciphers = ["ECDH-RSA-AES128-SHA","AES128-SHA"],
+    {ok, Sock} = ssl:connect(Host, Port,  [binary, {protocol, dtls}, {versions, ['dtlsv1', 'dtlsv1.2']}, {ciphers, Ciphers}]),
     {ok, #state{sock=Sock}};
 init([accept, ListenSocket]) ->
     gen_server:cast(self(), accept),
     {ok, #state{sock=ListenSocket}}.
 
 handle_call({get_channel, ChId}, _From, State=#state{channel=undefined}) ->
-    {ok, SupPid, Pid} = coap_channel_sup:start_link(self(), ChId),
-    {reply, {ok, Pid}, State#state{supid=SupPid, channel=Pid}}.
+    {ok, Pid} = coap_channel:start_link(self(), ChId),
+    {reply, {ok, Pid}, State#state{supid=undefined, channel=Pid}}.
 
 handle_cast(accept, State = #state{sock=ListenSocket}) ->
     {ok, Socket} = ssl:transport_accept(ListenSocket),
     % create a new acceptor to maintain a set of waiting acceptors
     coap_dtls_listen:start_socket(),
     % establish the connection
-    ok = ssl:ssl_accept(Socket),
+    {ok, SslSock} = ssl:handshake(Socket),
     % FIXME: where do we get the chanel id?
-    {ok, SupPid, Pid} = coap_channel_sup:start_link(self(), {{0,0,0,0}, 0}),
-    {noreply, State#state{sock=Socket, supid=SupPid, channel=Pid}};
+    {ok, Pid} = coap_channel:start_link(self(), {{0,0,0,0}, 0}),
+    {noreply, State#state{sock=SslSock, channel=Pid}};
 handle_cast(shutdown, State) ->
     {stop, normal, State}.
 
 handle_info({ssl, _Socket, Data}, State = #state{channel=Chan}) ->
-    Chan ! {datagram, Data},
+    Chan ! {datagram, self(), Data},
     {noreply, State};
 handle_info({ssl_closed, _Socket}, State) ->
     {stop, normal, State};
