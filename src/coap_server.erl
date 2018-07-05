@@ -61,19 +61,9 @@ start_dtls(Name, DtlsOpts) ->
 
 start_dtls(Name, Port, DtlsOpts) ->
     {ok, _} = application:ensure_all_started(ssl),
-    UdpOpts = application:get_env(?APP, udp_options, []),
-    SslOpts = application:get_env(?APP, ssl_options, []),
-    Opts = [{udp_options, UdpOpts}, {ssl_options, merge_opts(SslOpts, DtlsOpts)}],
+    Opts = merge_opts(application:get_env(?APP, dtls_options, []), DtlsOpts),
     MFA = {coap_channel_sup, start_channel, []},
-    start_child(esockd:dtls_child_spec(Name, Port, Opts, MFA)).
-
-merge_opts(Defaults, Options) ->
-    lists:foldl(
-      fun({Opt, Val}, Acc) ->
-          lists:keystore(Opt, 1, Acc, {Opt, Val});
-         (Opt, Acc) ->
-          lists:usort([Opt | Acc])
-      end, Defaults, Options).
+    start_child(esockd:dtls_child_spec(Name, Port, [{dtls_options, Opts}], MFA)).
 
 stop_dtls(Name) ->
     stop_dtls(Name, ?DEFAULT_COAPS_PORT).
@@ -90,6 +80,13 @@ stop_server(Name, Port) ->
         ok    -> supervisor:delete_child(?MODULE, ChildId);
         Error -> Error
     end.
+
+merge_opts(Defaults, Options) ->
+    lists:foldl(fun({Opt, Val}, Acc) ->
+                    lists:keystore(Opt, 1, Acc, {Opt, Val});
+                   (Opt, Acc) ->
+                    lists:usort([Opt | Acc])
+                end, Defaults, Options).
 
 %% Supervisor callbacks
 init([]) ->

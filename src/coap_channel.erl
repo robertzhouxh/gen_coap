@@ -10,13 +10,15 @@
 % socket pair, identified by a 2-tuple of local and remote socket addresses
 % stores state for a given endpoint
 -module(coap_channel).
+
 -behaviour(gen_server).
 
--export([start_link/2, start_link/3]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3, terminate/2]).
+-export([start_link/2]).
 -export([ping/1, send/2, send_request/3, send_message/3, send_response/3, close/1]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3, terminate/2]).
 
 -define(VERSION, 1).
+-define(IDLE_TIMEOUT, 2000).
 -define(MAX_MESSAGE_ID, 65535). % 16-bit number
 
 -record(state, {mode, sock, cid, tokens, trans, nextmid, responders}).
@@ -28,9 +30,6 @@ start_link(Scheme, ChId) when is_atom(Scheme) ->
 
 start_link(SockPid, ChId) when is_pid(SockPid) ->
     gen_server:start_link(?MODULE, [{server, SockPid}, ChId], []).
-
-start_link(SupPid, SockPid, ChId) ->
-    gen_server:start_link(?MODULE, [SupPid, SockPid, ChId], []).
 
 ping(Channel) ->
     send_message(Channel, make_ref(), #coap_message{type=con}).
@@ -52,12 +51,26 @@ send_response(Channel, Ref, Message) ->
     {ok, Ref}.
 
 close(Pid) ->
-    gen_server:cast(Pid, shutdown).
+    gen_server:call(Pid, shutdown).
 
-init([{Mode, SockPid}, ChId]) ->
+init([{client, Scheme}, ChId = {Host, Port}]) ->
+    case coap_client_socket:start_link(Scheme, Host, Port) of
+        {ok, SockPid} ->
+            {ok, init_state(client, SockPid, ChId)};
+        {error, Reason} ->
+            {stop, Reason}
+    end;
+
+init([{server, SockPid}, ChId]) ->
+    {ok, init_state(server, SockPid, ChId), ?IDLE_TIMEOUT}.
+
+init_state(Mode, SockPid, ChId) ->
     process_flag(trap_exit, true),
-    {ok, #state{mode = Mode, sock = SockPid, cid = ChId, tokens = #{},
-                trans = #{}, nextmid = first_mid(), responders = []}}.
+    #state{mode = Mode, sock = SockPid, cid = ChId, tokens = #{}, trans = #{},
+           responders = [], nextmid = first_mid()}.
+
+handle_call(shutdown, _From, State) ->
+    {stop, normal, ok, State};
 
 handle_call(_Unknown, _From, State) ->
     {reply, unknown_call, State}.
@@ -155,6 +168,8 @@ handle_info({responder_completed, Pid}, State=#state{responders=Responders}) ->
     purge_state(State#state{responders=lists:delete(Pid, Responders)});
 handle_info({'EXIT', Pid, _Reason}, State = #state{responders = Responders}) ->
     {noreply, State#state{responders = lists:delete(Pid, Responders)}};
+handle_info(timeout, State) ->
+    {stop, idle_timeout, State};
 handle_info(Info, State) ->
     io:fwrite("coap_channel: unexpected info: ~p~n", [Info]),
     {noreply, State}.
