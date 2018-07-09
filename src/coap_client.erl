@@ -125,24 +125,15 @@ split_segments(Path, Char, Acc) ->
 make_segment(Seg) ->
     list_to_binary(http_uri:decode(Seg)).
 
-channel_apply(coap, ChId, Fun) ->
-    {ok, Sock} = coap_udp_socket:start_link(),
-    {ok, Channel} = coap_udp_socket:get_channel(Sock, ChId),
-    % send and receive
-    Res = apply(Fun, [Channel]),
-    % terminate the processes
-    coap_channel:close(Channel),
-    coap_udp_socket:close(Sock),
-    Res;
-
-channel_apply(coaps, {Host, Port}, Fun) ->
-    {ok, Sock, Channel} = coap_dtls_socket:connect(Host, Port),
-    % send and receive
-    Res = apply(Fun, [Channel]),
-    % terminate the processes
-    coap_channel:close(Channel),
-    coap_dtls_socket:close(Sock),
-    Res.
+channel_apply(Scheme, ChId, Fun) ->
+    case coap_channel:start_link(Scheme, ChId) of
+        {ok, Channel} ->
+            Res = apply(Fun, [Channel]),
+            ok = coap_channel:close(Channel),
+            Res;
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 -include_lib("eunit/include/eunit.hrl").
 

@@ -10,21 +10,26 @@
 % socket pair, identified by a 2-tuple of local and remote socket addresses
 % stores state for a given endpoint
 -module(coap_channel).
+
 -behaviour(gen_server).
 
--export([start_link/4]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3, terminate/2]).
+-export([start_link/2]).
 -export([ping/1, send/2, send_request/3, send_message/3, send_response/3, close/1]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3, terminate/2]).
 
 -define(VERSION, 1).
+-define(IDLE_TIMEOUT, 2000).
 -define(MAX_MESSAGE_ID, 65535). % 16-bit number
 
--record(state, {sup, sock, cid, tokens, trans, nextmid, res, rescnt}).
+-record(state, {mode, sock, cid, tokens, trans, nextmid, responders}).
 
 -include("coap.hrl").
 
-start_link(SupPid, SockPid, ChId, ReSup) ->
-    gen_server:start_link(?MODULE, [SupPid, SockPid, ChId, ReSup], []).
+start_link(Scheme, ChId) when is_atom(Scheme) ->
+    gen_server:start_link(?MODULE, [{client, Scheme}, ChId], []);
+
+start_link(SockPid, ChId) when is_pid(SockPid) ->
+    gen_server:start_link(?MODULE, [{server, SockPid}, ChId], []).
 
 ping(Channel) ->
     send_message(Channel, make_ref(), #coap_message{type=con}).
@@ -46,13 +51,26 @@ send_response(Channel, Ref, Message) ->
     {ok, Ref}.
 
 close(Pid) ->
-    gen_server:cast(Pid, shutdown).
+    gen_server:call(Pid, shutdown).
 
-init([SupPid, SockPid, ChId, ReSup]) ->
-    % we want to get called upon termination
+init([{client, Scheme}, ChId = {Host, Port}]) ->
+    case coap_client_socket:start_link(Scheme, Host, Port) of
+        {ok, SockPid} ->
+            {ok, init_state(client, SockPid, ChId)};
+        {error, Reason} ->
+            {stop, Reason}
+    end;
+
+init([{server, SockPid}, ChId]) ->
+    {ok, init_state(server, SockPid, ChId), ?IDLE_TIMEOUT}.
+
+init_state(Mode, SockPid, ChId) ->
     process_flag(trap_exit, true),
-    {ok, #state{sup=SupPid, sock=SockPid, cid=ChId, tokens=dict:new(),
-        trans=dict:new(), nextmid=first_mid(), res=ReSup, rescnt=0}}.
+    #state{mode = Mode, sock = SockPid, cid = ChId, tokens = #{}, trans = #{},
+           responders = [], nextmid = first_mid()}.
+
+handle_call(shutdown, _From, State) ->
+    {stop, normal, ok, State};
 
 handle_call(_Unknown, _From, State) ->
     {reply, unknown_call, State}.
@@ -74,7 +92,7 @@ handle_cast(Request, State) ->
 
 transport_new_request(Message, Receiver, State=#state{tokens=Tokens}) ->
     Token = crypto:strong_rand_bytes(4), % shall be at least 32 random bits
-    Tokens2 = dict:store(Token, Receiver, Tokens),
+    Tokens2 = maps:put(Token, Receiver, Tokens),
     transport_new_message(Message#coap_message{token=Token}, Receiver, State#state{tokens=Tokens2}).
 
 transport_new_message(Message, Receiver, State=#state{nextmid=MsgId}) ->
@@ -85,7 +103,7 @@ transport_message(TrId, Message, Receiver, State) ->
         coap_transport:send(Message, create_transport(TrId, Receiver, State))).
 
 transport_response(Message=#coap_message{id=MsgId}, Receiver, State=#state{trans=Trans}) ->
-    case dict:find({in, MsgId}, Trans) of
+    case maps:find({in, MsgId}, Trans) of
         {ok, TrState} ->
             case coap_transport:awaits_response(TrState) of
                 true ->
@@ -99,66 +117,71 @@ transport_response(Message=#coap_message{id=MsgId}, Receiver, State=#state{trans
     end.
 
 % incoming CON(0) or NON(1) request
-handle_info({datagram, BinMessage= <<?VERSION:2, 0:1, _:1, _TKL:4, 0:3, _CodeDetail:5, MsgId:16, _/bytes>>}, State) ->
+handle_info({datagram, SockPid, BinMessage= <<?VERSION:2, 0:1, _:1, _TKL:4, 0:3, _CodeDetail:5, MsgId:16, _/bytes>>},
+            State = #state{sock = SockPid}) ->
     TrId = {in, MsgId},
     update_state(State, TrId,
         coap_transport:received(BinMessage, create_transport(TrId, undefined, State)));
 % incoming CON(0) or NON(1) response
-handle_info({datagram, BinMessage= <<?VERSION:2, 0:1, _:1, TKL:4, _Code:8, MsgId:16, Token:TKL/bytes, _/bytes>>},
-        State=#state{sock=Sock, cid=ChId, tokens=Tokens, trans=Trans}) ->
+handle_info({datagram, SockPid, BinMessage= <<?VERSION:2, 0:1, _:1, TKL:4, _Code:8, MsgId:16, Token:TKL/bytes, _/bytes>>},
+        State=#state{sock=SockPid, cid=ChId, tokens=Tokens, trans=Trans}) ->
     TrId = {in, MsgId},
-    case dict:find(TrId, Trans) of
+    case maps:find(TrId, Trans) of
         {ok, TrState} ->
             update_state(State, TrId, coap_transport:received(BinMessage, TrState));
         error ->
-            case dict:find(Token, Tokens) of
+            case maps:find(Token, Tokens) of
                 {ok, Receiver} ->
                     update_state(State, TrId,
                         coap_transport:received(BinMessage, init_transport(TrId, Receiver, State)));
                 error ->
                     % token was not recognized
-                    BinReset = coap_message_parser:encode(#coap_message{type=reset, id=MsgId}),
+                    BinReset = coap_packet:encode(#coap_message{type=reset, id=MsgId}),
                     io:fwrite("<- reset~n"),
-                    Sock ! {datagram, ChId, BinReset}
+                    SockPid ! {datagram, ChId, BinReset}
             end
     end;
 % incoming ACK(2) or RST(3) to a request or response
-handle_info({datagram, BinMessage= <<?VERSION:2, _:2, _TKL:4, _Code:8, MsgId:16, _/bytes>>},
-        State=#state{trans=Trans}) ->
+handle_info({datagram, SockPid, BinMessage= <<?VERSION:2, _:2, _TKL:4, _Code:8, MsgId:16, _/bytes>>},
+        State=#state{sock = SockPid, trans=Trans}) ->
     TrId = {out, MsgId},
     update_state(State, TrId,
-        case dict:find(TrId, Trans) of
+        case maps:find(TrId, Trans) of
             error -> undefined; % ignore unexpected responses
             {ok, TrState} -> coap_transport:received(BinMessage, TrState)
         end);
 % silently ignore other versions
-handle_info({datagram, <<Ver:2, _/bytes>>}, State) when Ver /= ?VERSION ->
+handle_info({datagram, SockPid, <<Ver:2, _/bytes>>}, State = #state{sock = SockPid}) when Ver /= ?VERSION ->
     {noreply, State};
 handle_info({timeout, TrId, Event}, State=#state{trans=Trans}) ->
     update_state(State, TrId,
-        case dict:find(TrId, Trans) of
+        case maps:find(TrId, Trans) of
             error -> undefined; % ignore unexpected responses
             {ok, TrState} -> coap_transport:timeout(Event, TrState)
         end);
 handle_info({request_complete, Token}, State=#state{tokens=Tokens}) ->
-    Tokens2 = dict:erase(Token, Tokens),
+    Tokens2 = maps:remove(Token, Tokens),
     purge_state(State#state{tokens=Tokens2});
-handle_info({responder_started}, State=#state{rescnt=Count}) ->
-    purge_state(State#state{rescnt=Count+1});
-handle_info({responder_completed}, State=#state{rescnt=Count}) ->
-    purge_state(State#state{rescnt=Count-1});
+handle_info({responder_started, Pid}, State=#state{responders=Responders}) ->
+    purge_state(State#state{responders = lists:usort([Pid|Responders])});
+handle_info({responder_completed, Pid}, State=#state{responders=Responders}) ->
+    purge_state(State#state{responders=lists:delete(Pid, Responders)});
+handle_info({'EXIT', Pid, _Reason}, State = #state{responders = Responders}) ->
+    {noreply, State#state{responders = lists:delete(Pid, Responders)}};
+handle_info(timeout, State) ->
+    {stop, idle_timeout, State};
 handle_info(Info, State) ->
-    io:fwrite("unexpected massage ~p~n", [Info]),
+    io:fwrite("coap_channel: unexpected info: ~p~n", [Info]),
     {noreply, State}.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-terminate(_Reason, #state{sup=SupPid, sock=SockPid, cid=ChId}) ->
-    %io:fwrite("channel ~p finished ~p~n", [ChId, Reason]),
-    SockPid ! {terminated, SupPid, ChId},
-    ok.
-
+terminate(_Reason, #state{mode = client, sock=SockPid}) ->
+    SockPid ! stop,
+    ok;
+terminate(Reason, #state{mode = server, responders = Responders}) ->
+    lists:foreach(fun(Pid) -> coap_responder:shutdown(Pid, Reason) end, Responders).
 
 first_mid() ->
     _ = rand:seed(exs1024),
@@ -171,27 +194,22 @@ next_mid(MsgId) ->
     end.
 
 create_transport(TrId, Receiver, State=#state{trans=Trans}) ->
-    case dict:find(TrId, Trans) of
+    case maps:find(TrId, Trans) of
         {ok, TrState} -> TrState;
         error -> init_transport(TrId, Receiver, State)
     end.
 
-init_transport(TrId, undefined, #state{sock=Sock, cid=ChId, res=ReSup}) ->
-    coap_transport:init(Sock, ChId, self(), TrId, ReSup, undefined);
 init_transport(TrId, Receiver, #state{sock=Sock, cid=ChId}) ->
-    coap_transport:init(Sock, ChId, self(), TrId, undefined, Receiver).
+    coap_transport:init(Sock, ChId, self(), TrId, Receiver).
 
 update_state(State=#state{trans=Trans}, TrId, undefined) ->
-    Trans2 = dict:erase(TrId, Trans),
-    purge_state(State#state{trans=Trans2});
+    purge_state(State#state{trans=maps:remove(TrId, Trans)});
 update_state(State=#state{trans=Trans}, TrId, TrState) ->
-    Trans2 = dict:store(TrId, TrState, Trans),
-    {noreply, State#state{trans=Trans2}}.
+    {noreply, State#state{trans=maps:put(TrId, TrState, Trans)}}.
 
-purge_state(State=#state{tokens=Tokens, trans=Trans, rescnt=Count}) ->
-    case dict:size(Tokens)+dict:size(Trans)+Count of
+purge_state(State=#state{tokens=Tokens, trans=Trans, responders=Responders}) ->
+    case maps:size(Tokens) + maps:size(Trans) + length(Responders)of
         0 -> {stop, normal, State};
         _Else -> {noreply, State}
     end.
 
-% end of file

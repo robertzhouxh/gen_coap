@@ -8,14 +8,16 @@
 %
 
 -module(coap_observer).
+
 -behaviour(gen_server).
 
 -export([observe/1, observe/2, stop/1]).
+
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3, terminate/2]).
 
 -include("coap.hrl").
 
--record(state, {client, scheme, sock, channel, ropt, ref, lastseq}).
+-record(state, {client, scheme, channel, ropt, ref, lastseq}).
 
 observe(Uri) ->
     observe(Uri, []).
@@ -39,29 +41,22 @@ observe(Uri, Options) ->
 stop(Pid) ->
     gen_server:call(Pid, shutdown).
 
-
 init([Client, Uri, Options]) ->
     {Scheme, ChId, Path, Query} = coap_client:resolve_uri(Uri),
-    {ok, Sock, Channel} = case Scheme of
-        coap ->
-            {ok, So} = coap_udp_socket:start_link(),
-            {ok, Ch} = coap_udp_socket:get_channel(So, ChId),
-            {ok, So, Ch};
-        coaps ->
-            {Host, Port} = ChId,
-            coap_dtls_socket:connect(Host, Port)
-    end,
-    % observe the resource
-    ROpt = [{uri_path, Path}, {uri_query, Query}|Options],
-    {ok, Ref} = coap_channel:send(Channel,
-        coap_message:request(con, get, <<>>, [{observe, 0}|ROpt])),
-    {ok, #state{client=Client, scheme=Scheme, sock=Sock, channel=Channel, ropt=ROpt, ref=Ref}}.
+    case coap_channel:start_link(Scheme, ChId) of
+        {ok, Channel} ->
+            % observe the resource
+            ROpt = [{uri_path, Path}, {uri_query, Query}|Options],
+            {ok, Ref} = coap_channel:send(Channel, coap_message:request(con, get, <<>>, [{observe, 0}|ROpt])),
+            {ok, #state{client=Client, scheme=Scheme, channel=Channel, ropt=ROpt, ref=Ref}};
+        {error, Reason} -> {stop, Reason}
+    end.
 
 handle_call(shutdown, _From, State=#state{channel=Channel, ropt=ROpt}) ->
-    {ok, Ref} = coap_channel:send(Channel,
-        coap_message:request(con, get, <<>>, [{observe, 1}|ROpt])),
+    {ok, Ref} = coap_channel:send(Channel, coap_message:request(con, get, <<>>, [{observe, 1} | ROpt])),
     Reply = coap_client:await_response(Channel, get, ROpt, Ref, #coap_content{}),
     {stop, normal, Reply, State};
+
 handle_call(_Unknown, _From, State) ->
     {reply, unknown_call, State}.
 
@@ -74,13 +69,16 @@ handle_info({coap_response, _ChId, Channel, Ref, Message=#coap_message{type=con}
     % response or notification arrived as a separate confirmable message
     {ok, _} = coap_client:ack(Channel, Message),
     handle_response(Message, State);
+
 handle_info({coap_response, _ChId, Channel, Ref, Message},
         State=#state{channel=Channel, ref=Ref}) ->
     handle_response(Message, State);
+
 handle_info({coap_error, _ChId, Channel, Ref, reset},
         State=#state{client=Client, channel=Channel, ref=Ref}) ->
     Client ! {coap_notify, self(), undefined, {error, reset}, #coap_content{}},
     {stop, normal, State};
+
 handle_info(Info, State) ->
     io:fwrite("coap_observer unexpected ~p~n", [Info]),
     {noreply, State}.
@@ -88,15 +86,8 @@ handle_info(Info, State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-terminate(_Reason, #state{scheme=coap, sock=Sock, channel=Channel}) ->
-    coap_channel:close(Channel),
-    coap_udp_socket:close(Sock),
-    ok;
-terminate(_Reason, #state{scheme=coaps, sock=Sock, channel=Channel}) ->
-    coap_channel:close(Channel),
-    coap_dtls_socket:close(Sock),
-    ok.
-
+terminate(_Reason, #state{channel=Channel}) ->
+    coap_channel:close(Channel).
 
 handle_response(Message=#coap_message{method={ok, _Code}, options=Options, payload=Payload}, State) ->
     case proplists:get_value(block2, Options) of

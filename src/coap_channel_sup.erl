@@ -7,27 +7,31 @@
 % Copyright (c) 2015 Petr Gotthard <petr.gotthard@centrum.cz>
 %
 
-% supervisor for a single channel
+% stores one channel handler per endpoint
+% when communication ceases the respective channel exits normally
 -module(coap_channel_sup).
+
 -behaviour(supervisor).
 
--export([start_link/2, init/1]).
+-export([start_link/0, start_channel/2, count_channels/0]).
 
-start_link(SockPid, ChId) ->
-    {ok, SupPid} = supervisor:start_link(?MODULE, []),
-    {ok, ReSup} = supervisor:start_child(SupPid,
-        {coap_responder_sup,
-            {coap_responder_sup, start_link, []},
-            permanent, infinity, supervisor, []}),
-    {ok, ChPid} = supervisor:start_child(SupPid,
-        {coap_channel,
-            {coap_channel, start_link, [SupPid, SockPid, ChId, ReSup]},
-            transient, 5000, worker, []}),
-    {ok, SupPid, ChPid}.
+-export([init/1]).
+
+start_link() ->
+    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+
+start_channel(SockPid, ChId) ->
+    supervisor:start_child(?MODULE, [SockPid, ChId]).
+
+count_channels() ->
+    proplists:get_value(active, supervisor:count_children(?MODULE), 0).
 
 init([]) ->
-    % crash of any worker will terminate the supervisor and invoke start_link/2 again
-    {ok, {{one_for_all, 0, 1}, []}}.
+    {ok, {{simple_one_for_one, 0, 1},
+          [#{id       => channel,
+             start    => {coap_channel, start_link, []},
+             restart  => transient,
+             shutdown => 5000,
+             type     => worker,
+             modules  => [coap_channel]}]}}.
 
-
-% end of file

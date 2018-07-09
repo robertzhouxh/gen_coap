@@ -7,12 +7,10 @@
 % Copyright (c) 2015 Petr Gotthard <petr.gotthard@centrum.cz>
 %
 
-% encoding and decoding for the CoRE link format, see RFC 6690
+% @doc encoding and decoding for the CoRE link format, see RFC 6690
 -module(core_link).
 
 -export([decode/1, encode/1]).
--import(core_iana, [content_formats/0]).
--import(core_iana, [decode_enum/2, decode_enum/3, encode_enum/2, encode_enum/3]).
 
 decode(Binary) when is_binary(Binary) ->
     decode(binary_to_list(Binary));
@@ -60,7 +58,7 @@ encode_link_param({sz, Value}) -> ";sz=" ++ integer_to_list(Value);
 encode_link_param({Other, Value}) when is_binary(Value) -> ";"++atom_to_list(Other)++"=\"" ++ binary_to_list(Value) ++ "\"".
 
 content_type_to_int(Value) when is_binary(Value) ->
-    case encode_enum(content_formats(), Value) of
+    case core_iana:encode_enum(core_iana:content_formats(), Value) of
         undefined -> "\"" ++ binary_to_list(Value) ++ "\"";
         Num when is_integer(Num) -> integer_to_list(Num)
     end;
@@ -87,4 +85,3 @@ test_decode(String, Struct) ->
     % try reverse encoding of the decoded structure
     ?_assertEqual(String, encode(Struct2))].
 
-% end of file
