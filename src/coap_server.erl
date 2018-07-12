@@ -8,16 +8,17 @@
 %
 
 % CoAP server application
-% supervisor for content registry, listening socket and channel supervisor
 -module(coap_server).
 
 -behaviour(application).
 -behaviour(supervisor).
 
+-include("coap.hrl").
+
 -export([start/0, stop/0]).
 
--export([start_udp/1, start_udp/2, stop_udp/1, stop_udp/2]).
--export([start_dtls/2, start_dtls/3, stop_dtls/1, stop_dtls/2]).
+-export([start_udp/1, start_udp/2,  start_udp/3, stop_udp/1, stop_udp/2]).
+-export([start_dtls/1, start_dtls/2, start_dtls/3, stop_dtls/1, stop_dtls/2]).
 
 %% application callbacks
 -export([start/2, stop/1]).
@@ -25,12 +26,10 @@
 %% supervisor callbacks
 -export([init/1]).
 
--include("coap.hrl").
-
 -define(APP, gen_coap).
 
 start() ->
-    application:start(?APP).
+    application:ensure_all_started(?APP).
 
 stop() ->
     application:stop(?APP).
@@ -46,9 +45,11 @@ start_udp(Name) ->
     start_udp(Name, ?DEFAULT_COAP_PORT).
 
 start_udp(Name, Port) ->
-    MFA = {coap_channel_sup, start_channel, []},
-    Opts = application:get_env(?APP, udp_options, []),
-    start_child(esockd:udp_child_spec(Name, Port, Opts, MFA)).
+    start_udp(Name, Port, []).
+
+start_udp(Name, Port, Opts) ->
+    UdpOpts = merge_opts(application:get_env(?APP, udp_options, []), Opts),
+    start_server(fun esockd:udp_child_spec/4, Name, Port, [{udp_options, UdpOpts}]).
 
 stop_udp(Name) ->
     stop_udp(Name, ?DEFAULT_COAP_PORT).
@@ -56,14 +57,16 @@ stop_udp(Name) ->
 stop_udp(Name, Port) ->
     stop_server(Name, Port).
 
-start_dtls(Name, DtlsOpts) ->
-    start_dtls(Name, ?DEFAULT_COAPS_PORT, DtlsOpts).
+start_dtls(Name) ->
+    start_dtls(Name, ?DEFAULT_COAPS_PORT).
 
-start_dtls(Name, Port, DtlsOpts) ->
+start_dtls(Name, Port) ->
+    start_dtls(Name, Port, []).
+
+start_dtls(Name, Port, Opts) ->
     {ok, _} = application:ensure_all_started(ssl),
-    Opts = merge_opts(application:get_env(?APP, dtls_options, []), DtlsOpts),
-    MFA = {coap_channel_sup, start_channel, []},
-    start_child(esockd:dtls_child_spec(Name, Port, [{dtls_options, Opts}], MFA)).
+    DtlsOpts = merge_opts(application:get_env(?APP, dtls_options, []), Opts),
+    start_server(fun esockd:dtls_child_spec/4, Name, Port, [{dtls_options, DtlsOpts}]).
 
 stop_dtls(Name) ->
     stop_dtls(Name, ?DEFAULT_COAPS_PORT).
@@ -71,8 +74,9 @@ stop_dtls(Name) ->
 stop_dtls(Name, Port) ->
     stop_server(Name, Port).
 
-start_child(Spec) ->
-    supervisor:start_child(?MODULE, Spec).
+start_server(SpecFun, Name, Port, Opts) ->
+    MFA = {coap_channel_sup, start_channel, []},
+    supervisor:start_child(?MODULE, SpecFun(Name, Port, Opts, MFA)).
 
 stop_server(Name, Port) ->
     ChildId = esockd_sup:child_id(Name, Port),

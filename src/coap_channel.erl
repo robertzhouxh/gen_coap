@@ -26,10 +26,10 @@
 -include("coap.hrl").
 
 start_link(Scheme, ChId) when is_atom(Scheme) ->
-    gen_server:start_link(?MODULE, [{client, Scheme}, ChId], []);
+    gen_server:start_link(?MODULE, [client, Scheme, ChId], []);
 
-start_link(SockPid, ChId) when is_pid(SockPid) ->
-    gen_server:start_link(?MODULE, [{server, SockPid}, ChId], []).
+start_link(Transport, ChId) when is_tuple(Transport) ->
+    gen_server:start_link(?MODULE, [server, Transport, ChId], []).
 
 ping(Channel) ->
     send_message(Channel, make_ref(), #coap_message{type=con}).
@@ -53,15 +53,15 @@ send_response(Channel, Ref, Message) ->
 close(Pid) ->
     gen_server:call(Pid, shutdown).
 
-init([{client, Scheme}, ChId = {Host, Port}]) ->
-    case coap_client_socket:start_link(Scheme, Host, Port) of
+init([client, Scheme, ChId = {Host, Port}]) ->
+    case coap_client_socket:connect(Scheme, Host, Port) of
         {ok, SockPid} ->
             {ok, init_state(client, SockPid, ChId)};
         {error, Reason} ->
             {stop, Reason}
     end;
 
-init([{server, SockPid}, ChId]) ->
+init([server, {_, SockPid, _Sock}, ChId]) ->
     {ok, init_state(server, SockPid, ChId), ?IDLE_TIMEOUT}.
 
 init_state(Mode, SockPid, ChId) ->
@@ -124,7 +124,7 @@ handle_info({datagram, SockPid, BinMessage= <<?VERSION:2, 0:1, _:1, _TKL:4, 0:3,
         coap_transport:received(BinMessage, create_transport(TrId, undefined, State)));
 % incoming CON(0) or NON(1) response
 handle_info({datagram, SockPid, BinMessage= <<?VERSION:2, 0:1, _:1, TKL:4, _Code:8, MsgId:16, Token:TKL/bytes, _/bytes>>},
-        State=#state{sock=SockPid, cid=ChId, tokens=Tokens, trans=Trans}) ->
+        State = #state{sock = SockPid, cid = ChId, tokens = Tokens, trans = Trans}) ->
     TrId = {in, MsgId},
     case maps:find(TrId, Trans) of
         {ok, TrState} ->
@@ -202,12 +202,12 @@ create_transport(TrId, Receiver, State=#state{trans=Trans}) ->
 init_transport(TrId, Receiver, #state{sock=Sock, cid=ChId}) ->
     coap_transport:init(Sock, ChId, self(), TrId, Receiver).
 
-update_state(State=#state{trans=Trans}, TrId, undefined) ->
-    purge_state(State#state{trans=maps:remove(TrId, Trans)});
-update_state(State=#state{trans=Trans}, TrId, TrState) ->
-    {noreply, State#state{trans=maps:put(TrId, TrState, Trans)}}.
+update_state(State = #state{trans = Trans}, TrId, undefined) ->
+    purge_state(State#state{trans = maps:remove(TrId, Trans)});
+update_state(State = #state{trans = Trans}, TrId, TrState) ->
+    {noreply, State#state{trans = maps:put(TrId, TrState, Trans)}}.
 
-purge_state(State=#state{tokens=Tokens, trans=Trans, responders=Responders}) ->
+purge_state(State = #state{tokens=Tokens, trans=Trans, responders=Responders}) ->
     case maps:size(Tokens) + maps:size(Trans) + length(Responders)of
         0 -> {stop, normal, State};
         _Else -> {noreply, State}
