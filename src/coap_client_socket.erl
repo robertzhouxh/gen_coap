@@ -12,20 +12,22 @@
 
 -include("coap.hrl").
 
--export([start_link/3, init/1, loop/1, stop/1]).
+-export([connect/3, connect/4, connect/5]).
+-export([init/1, loop/1, stop/1]).
 
 -record(state, {owner, scheme, sock, host, port}).
 
 -define(TIMEOUT, 10000).
 
-start_link(Scheme, Host, Port) ->
-    start_link(Scheme, Host, Port, ?TIMEOUT).
+connect(Scheme, Host, Port) ->
+    connect(Scheme, Host, Port, []).
+connect(Scheme, Host, Port, Options) ->
+    connect(Scheme, Host, Port, Options, ?TIMEOUT).
+connect(Scheme, Host, Port, Options, Timeout) ->
+    proc_lib:start_link(?MODULE, init, [[self(), Scheme, Host, Port, Options, Timeout]]).
 
-start_link(Scheme, Host, Port, Timeout) ->
-    proc_lib:start_link(?MODULE, init, [[self(), Scheme, Host, Port, Timeout]]).
-
-init([Parent, Scheme, Host, Port, Timeout]) ->
-    case connect(Scheme, Host, Port, Timeout) of
+init([Parent, Scheme, Host, Port, Options, Timeout]) ->
+    case do_connect(Scheme, Host, Port, Options, Timeout) of
         {ok, Sock} ->
             proc_lib:init_ack(Parent, {ok, self()}),
             loop(#state{owner = Parent, scheme = Scheme, sock = Sock, host = Host, port = Port});
@@ -33,26 +35,25 @@ init([Parent, Scheme, Host, Port, Timeout]) ->
             proc_lib:init_ack(Parent, {error, Reason})
     end.
 
-connect(coap, _Host, _Port, _Timeout) ->
-    gen_udp:open(0, [binary, {active, true}, {reuseaddr, true}]);
+do_connect(coap, _Host, _Port, Options, _Timeout) ->
+    gen_udp:open(0, lists:ukeymerge(1, [{active, true}, {mode, binary}, {reuseaddr, true}], Options));
 
-connect(coaps, Host, Port, Timeout) ->
-    Ciphers = ["ECDH-RSA-AES128-SHA","AES128-SHA"],
-    ssl:connect(Host, Port, [binary, {protocol, dtls}, {ciphers, Ciphers}], Timeout).
+do_connect(coaps, Host, Port, Options, Timeout) ->
+    ssl:connect(Host, Port, lists:ukeymerge(1, [{mode, binary}, {protocol, dtls}], Options), Timeout).
 
 loop(State = #state{owner = Owner, scheme = Scheme, sock = Sock}) ->
     receive
         %% Send ->
-        {datagram, _To, Data} ->
-            ok = send(Data, State),
+        {datagram, _To, Packet} ->
+            ok = send(Packet, State),
             hibernate(State);
         %% Recv <-
-        {udp, Sock, _PeerIP, _PeerPortNo, Data} ->
-            Owner ! {datagram, self(), Data},
+        {udp, Sock, _PeerIP, _PeerPortNo, Packet} ->
+            Owner ! {datagram, self(), Packet},
             hibernate(State);
         %% Recv <-
-        {ssl, Sock, Data} ->
-            Owner ! {datagram, self(), Data},
+        {ssl, Sock, Packet} ->
+            Owner ! {datagram, self(), Packet},
             hibernate(State);
         {ssl_error, Sock, Reason} ->
             exit({ssl_error, Reason});
@@ -67,10 +68,10 @@ loop(State = #state{owner = Owner, scheme = Scheme, sock = Sock}) ->
 stop(SockPid) when is_pid(SockPid) ->
     SockPid ! stop.
 
-send(Data, #state{scheme = coap, sock = Sock, host = Host, port = Port}) ->
-    gen_udp:send(Sock, Host, Port, Data);
-send(Data, #state{scheme = coaps, sock = Sock}) ->
-    ssl:send(Sock, Data).
+send(Packet, #state{scheme = coap, sock = Sock, host = Host, port = Port}) ->
+    gen_udp:send(Sock, Host, Port, Packet);
+send(Packet, #state{scheme = coaps, sock = Sock}) ->
+    ssl:send(Sock, Packet).
 
 hibernate(State) ->
     erlang:hibernate(?MODULE, loop, [State]).

@@ -56,7 +56,7 @@ start() ->
     {atomic, ok} = mnesia:create_table(resources, []),
     {ok, _} = application:ensure_all_started(gen_coap),
     {ok, _} = coap_server:start_udp(coap_udp_socket),
-    {ok, _} = coap_server:start_dtls(coap_dtls_socket,
+    {ok, _} = coap_server:start_dtls(coap_dtls_socket, ?DEFAULT_COAPS_PORT,
                                      [{versions, ['dtlsv1', 'dtlsv1.2']},
                                       {verify, verify_none},
                                       {ciphers, ciphers()},
