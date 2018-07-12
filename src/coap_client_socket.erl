@@ -76,8 +76,6 @@ send(Packet, #state{scheme = coaps, sock = Sock}) ->
 hibernate(State) ->
     erlang:hibernate(?MODULE, loop, [State]).
 
-close(coap, Sock)  ->
-    gen_udp:close(Sock);
-close(coaps, Sock) ->
-    ssl:close(Sock).
+close(coap, Sock)  -> gen_udp:close(Sock);
+close(coaps, Sock) -> ssl:close(Sock).
 
