@@ -37,7 +37,6 @@ init([Parent, Scheme, Host, Port, Options, Timeout]) ->
 
 do_connect(coap, _Host, _Port, Options, _Timeout) ->
     gen_udp:open(0, lists:ukeymerge(1, [{active, true}, {mode, binary}, {reuseaddr, true}], Options));
-
 do_connect(coaps, Host, Port, Options, Timeout) ->
     ssl:connect(Host, Port, lists:ukeymerge(1, [{mode, binary}, {protocol, dtls}], Options), Timeout).
 
