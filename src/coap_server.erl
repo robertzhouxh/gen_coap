@@ -16,9 +16,9 @@
 -include("coap.hrl").
 
 -export([start/0, stop/0]).
-
 -export([start_udp/1, start_udp/2,  start_udp/3, stop_udp/1, stop_udp/2]).
 -export([start_dtls/1, start_dtls/2, start_dtls/3, stop_dtls/1, stop_dtls/2]).
+-export([add_handler/3, del_handler/2]).
 
 %% application callbacks
 -export([start/2, stop/1]).
@@ -91,6 +91,12 @@ merge_opts(Defaults, Options) ->
                    (Opt, Acc) ->
                     lists:usort([Opt | Acc])
                 end, Defaults, Options).
+
+add_handler(Prefix, Module, Args) ->
+    coap_server_registry:add_handler(Prefix, Module, Args).
+
+del_handler(Prefix, Module) ->
+    coap_server_registry:del_handler(Prefix, Module).
 
 %% Supervisor callbacks
 init([]) ->
