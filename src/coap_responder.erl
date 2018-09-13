@@ -199,13 +199,14 @@ handle_method(_ChId, Request, _Resource, State) ->
 
 handle_observe(ChId, Request=#coap_message{options=Options}, Content=#coap_content{},
         State=#state{prefix=Prefix, module=Module, observer=undefined}) ->
+    Content = coap_message:get_content(Request),
     % the first observe request from this user to this resource
-    case invoke_callback(Module, coap_observe, [ChId, Prefix, uri_suffix(Prefix, Request), requires_ack(Request)]) of
-        {ok, ObState} ->
+    case invoke_callback(Module, coap_observe, [ChId, Prefix, uri_suffix(Prefix, Request), requires_ack(Request), Content]) of
+        {ok, ObState, NewContent} ->
             Uri = proplists:get_value(uri_path, Options, []),
             pg2:create({coap_observer, Uri}),
             ok = pg2:join({coap_observer, Uri}, self()),
-            return_resource(Request, Content, State#state{observer=Request, obstate=ObState});
+            return_resource(Request, NewContent, State#state{observer=Request, obstate=ObState});
         {error, method_not_allowed} ->
             % observe is not supported, fallback to standard get
             return_resource(Request, Content, State#state{observer=undefined});
