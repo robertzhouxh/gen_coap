@@ -206,6 +206,11 @@ handle_observe(ChId, Request=#coap_message{options=Options}, Content=#coap_conte
             pg2:create({coap_observer, Uri}),
             ok = pg2:join({coap_observer, Uri}, self()),
             return_resource(Request, NewContent, State#state{observer=Request, obstate=ObState});
+        {ok, ObState, Code, NewContent} ->
+            Uri = proplists:get_value(uri_path, Options, []),
+            pg2:create({coap_observer, Uri}),
+            ok = pg2:join({coap_observer, Uri}, self()),
+            return_resource([], Request, {ok, Code}, NewContent, State#state{observer=Request, obstate=ObState});
         {error, method_not_allowed} ->
             % observe is not supported, fallback to standard get
             return_resource(Request, Content, State#state{observer=undefined});
