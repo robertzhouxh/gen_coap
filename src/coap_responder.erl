@@ -139,8 +139,9 @@ process_request(ChId, Request, State) ->
     check_resource(ChId, Request, State).
 
 check_resource(ChId, Request, State=#state{prefix=Prefix, module=Module}) ->
+    Content = coap_message:get_content(Request),
     case invoke_callback(Module, coap_get,
-            [ChId, Prefix, uri_suffix(Prefix, Request), uri_query(Request)]) of
+            [ChId, Prefix, uri_suffix(Prefix, Request), uri_query(Request), Content]) of
         R1=#coap_content{} ->
             check_preconditions(ChId, Request, R1, State);
         R2={error, not_found} ->
