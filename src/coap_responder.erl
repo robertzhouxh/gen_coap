@@ -199,7 +199,6 @@ handle_method(_ChId, Request, _Resource, State) ->
 
 handle_observe(ChId, Request=#coap_message{options=Options}, Content=#coap_content{},
         State=#state{prefix=Prefix, module=Module, observer=undefined}) ->
-    Content = coap_message:get_content(Request),
     % the first observe request from this user to this resource
     case invoke_callback(Module, coap_observe, [ChId, Prefix, uri_suffix(Prefix, Request), requires_ack(Request), Content]) of
         {ok, ObState, NewContent} ->
@@ -255,6 +254,8 @@ handle_put(ChId, Request, Resource, State=#state{prefix=Prefix, module=Module}) 
             [ChId, Prefix, uri_suffix(Prefix, Request), Content]) of
         ok ->
             return_response(Request, created_or_changed(Resource), State);
+        {ok, Code, Content2} ->
+            return_resource([], Request, {ok, Code}, Content2, State);
         {error, Error} ->
             return_response(Request, {error, Error}, State);
         {error, Error, Reason} ->
