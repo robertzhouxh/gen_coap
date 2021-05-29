@@ -27,7 +27,7 @@ start_link(Channel, Uri) ->
     gen_server:start_link(?MODULE, [Channel, Uri], []).
 
 notify(Uri, Resource) ->
-    case pg2:get_members({coap_observer, Uri}) of
+    case pg:get_members({coap_observer, Uri}) of
         {error, _} -> ok;
         List -> [gen_server:cast(Pid, Resource) || Pid <- List]
     end.
@@ -203,13 +203,11 @@ handle_observe(ChId, Request=#coap_message{options=Options}, Content=#coap_conte
     case invoke_callback(Module, coap_observe, [ChId, Prefix, uri_suffix(Prefix, Request), requires_ack(Request), Content]) of
         {ok, ObState, NewContent} ->
             Uri = proplists:get_value(uri_path, Options, []),
-            pg2:create({coap_observer, Uri}),
-            ok = pg2:join({coap_observer, Uri}, self()),
+            ok = pg:join({coap_observer, Uri}, self()),
             return_resource(Request, NewContent, State#state{observer=Request, obstate=ObState});
         {ok, ObState, Code, NewContent} ->
             Uri = proplists:get_value(uri_path, Options, []),
-            pg2:create({coap_observer, Uri}),
-            ok = pg2:join({coap_observer, Uri}, self()),
+            ok = pg:join({coap_observer, Uri}, self()),
             return_resource([], Request, {ok, Code}, NewContent, State#state{observer=Request, obstate=ObState});
         {error, method_not_allowed} ->
             % observe is not supported, fallback to standard get
@@ -233,12 +231,7 @@ handle_unobserve(_ChId, Request, Resource, State) ->
 cancel_observer(#coap_message{options=Options}, State=#state{module=Module, obstate=ObState}) ->
     ok = invoke_callback(Module, coap_unobserve, [ObState]),
     Uri = proplists:get_value(uri_path, Options, []),
-    ok = pg2:leave({coap_observer, Uri}, self()),
-    % will the last observer to leave this group please turn out the lights
-    case pg2:get_members({coap_observer, Uri}) of
-        [] -> pg2:delete({coap_observer, Uri});
-        _Else -> ok
-    end,
+    ok = pg:leave({coap_observer, Uri}, self()),
     {ok, State#state{observer=undefined, obstate=undefined}}.
 
 handle_post(ChId, Request, State=#state{prefix=Prefix, module=Module}) ->
