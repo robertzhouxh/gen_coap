@@ -107,8 +107,8 @@ ack(Channel, Message) ->
 
 
 resolve_uri(Uri) ->
-    #{scheme := SchemeStr, host := Host, path := Path} = Parsed = uri_string:parse(Uri),
-    Scheme = erlang:list_to_atom(SchemeStr),
+    {ok, Parsed} = emqx_http_lib:uri_parse(Uri),
+    #{scheme := Scheme, host := Host, path := Path} = Parsed,
     Query = maps:get(query, Parsed, ""),
     DefaultPortNo =
         case Scheme of
@@ -137,7 +137,7 @@ split_segments(Path, Char, Acc) ->
     end.
 
 make_segment(Seg) ->
-    list_to_binary(uri_string:percent_decode(Seg)).
+    list_to_binary(emqx_http_lib:uri_decode(Seg)).
 
 channel_apply(coap, ChId, Fun) ->
     {ok, Sock} = coap_udp_socket:start_link(),
