@@ -108,14 +108,9 @@ ack(Channel, Message) ->
 
 resolve_uri(Uri) ->
     {ok, Parsed} = emqx_http_lib:uri_parse(Uri),
-    #{scheme := Scheme, host := Host, path := Path} = Parsed,
+    #{scheme := Scheme, host := Host, path := Path, port := PortNo} = Parsed,
     Query = maps:get(query, Parsed, ""),
-    DefaultPortNo =
-        case Scheme of
-            coap -> ?DEFAULT_COAP_PORT;
-            coaps -> ?DEFAULT_COAPS_PORT
-        end,
-    PortNo = maps:get(port, Parsed, DefaultPortNo),
+    Scheme =/= coap andalso Scheme =/= coaps andalso error({unexpected_scheme, Scheme}), %% assert
     {ok, PeerIP} = inet:getaddr(Host, inet),
     {Scheme, {PeerIP, PortNo}, split_path(Path), split_query(Query)}.
 
