@@ -1,6 +1,6 @@
 {application, gen_coap,
 	[{description, "Constrained Application Protocol"},
-	{vsn, "0.2.1"},
+	{vsn, git},
 	{modules, []},
 	{registered, []},
 	{mod, {coap_server, []}},
