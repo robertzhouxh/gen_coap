@@ -34,6 +34,7 @@ notify(Uri, Resource) ->
 
 init([Channel, Uri]) ->
     % the receiver will be determined based on the URI
+    ?GLD_LOG("---> start coap_responder succed for Channel: ~p Uri: ~p as PID: ~p~n", [Channel, Uri, self()]),
     case coap_server_registry:get_handler(Uri) of
         {Prefix, Module, Args} ->
             Channel ! {responder_started},
@@ -56,7 +57,8 @@ handle_cast({error, Code}, State=#state{observer=Observer}) ->
     return_response(Observer, {error, Code}, State2).
 
 handle_info({coap_request, ChId, _Channel, undefined, Request}, State) ->
-    %io:fwrite("-> ~p~n", [Request]),
+    %?GLD_LOG("---> request: ~p~n", [Request]),
+    ?GLD_LOG("---> coap request comming: ~p~n", [Request]),
     handle(ChId, Request, State);
 handle_info(cache_expired, State=#state{observer=undefined}) ->
     {stop, normal, State};
@@ -88,6 +90,7 @@ handle_info(Info, State=#state{module=Module, observer=Observer, obstate=ObState
     end.
 
 terminate(_Reason, #state{channel=Channel}) ->
+    ?GLD_LOG("---> coap_responder: ~p Exit!!! ~n", [self()]),
     Channel ! {responder_completed},
     ok.
 
@@ -133,6 +136,7 @@ process_request(ChId, Request=#coap_message{options=Options},
         {N, _, _} when N > 0 ->
             return_resource([], Request, {ok, Code}, Content, State);
         _Else ->
+	    ?GLD_LOG("---> process coap request: ~p~n", [Request]),
             check_resource(ChId, Request, State)
     end;
 process_request(ChId, Request, State) ->
@@ -143,12 +147,16 @@ check_resource(ChId, Request, State=#state{prefix=Prefix, module=Module}) ->
     case invoke_callback(Module, coap_get,
             [ChId, Prefix, uri_suffix(Prefix, Request), uri_query(Request), Content]) of
         R1=#coap_content{} ->
+            ?GLD_LOG("--> coap request return R1: ~p~n", [R1]),
             check_preconditions(ChId, Request, R1, State);
         R2={error, not_found} ->
+            ?GLD_LOG("--> coap request return R2: ~p~n", [R2]),
             check_preconditions(ChId, Request, R2, State);
         {error, Code} ->
+            ?GLD_LOG("--> coap request return ErrCode: ~s~n", [Code]),
             return_response(Request, {error, Code}, State);
         {error, Code, Reason} ->
+            ?GLD_LOG("--> coap request return ErrCode: ~s, Reason: ~p~n", [Code, Reason]),
             return_response([], Request, {error, Code}, Reason, State)
     end.
 
@@ -178,15 +186,20 @@ if_none_match(#coap_message{}, {error, _}) ->
 handle_method(ChId, Request=#coap_message{method='get', options=Options}, Resource=#coap_content{}, State) ->
     case proplists:get_value(observe, Options) of
         0 ->
+	    ?GLD_LOG("---> handle_method: observe resource: ~p~n", [Resource]),
             handle_observe(ChId, Request, Resource, State);
         1 ->
+	    ?GLD_LOG("---> handle_method: unobserve resource: ~p~n", [Resource]),
             handle_unobserve(ChId, Request, Resource, State);
         undefined ->
+	    ?GLD_LOG("---> handle_method: return resource: ~p~n", [Resource]),
             return_resource(Request, Resource, State);
         _Else ->
+	    ?GLD_LOG("---> handle_method: return resource: ~s~n", [bad_option]),
             return_response(Request, {error, bad_option}, State)
     end;
 handle_method(_ChId, Request=#coap_message{method='get'}, {error, Code}, State) ->
+    ?GLD_LOG("---> handle_method: return resource ~p~n", [{error, Code}]),
     return_response(Request, {error, Code}, State);
 handle_method(ChId, Request=#coap_message{method='post'}, _Resource, State) ->
     handle_post(ChId, Request, State);
@@ -203,23 +216,41 @@ handle_observe(ChId, Request=#coap_message{options=Options}, Content=#coap_conte
     case invoke_callback(Module, coap_observe, [ChId, Prefix, uri_suffix(Prefix, Request), requires_ack(Request), Content]) of
         {ok, ObState, NewContent} ->
             Uri = proplists:get_value(uri_path, Options, []),
-            ok = pg:join({coap_observer, Uri}, self()),
+	    ?GLD_LOG("---> observe URI: ~p, in self: ~p ~n", [Uri, self()]),
+            ok = pg:join({ccoap_observer, Uri}, self()),
             return_resource(Request, NewContent, State#state{observer=Request, obstate=ObState});
         {ok, ObState, Code, NewContent} ->
             Uri = proplists:get_value(uri_path, Options, []),
+	    ?GLD_LOG("---> observe URI: ~p, in self: ~p ~n", [Uri, self()]),
             ok = pg:join({coap_observer, Uri}, self()),
             return_resource([], Request, {ok, Code}, NewContent, State#state{observer=Request, obstate=ObState});
         {error, method_not_allowed} ->
             % observe is not supported, fallback to standard get
+	    ?GLD_LOG("---> observe ~s ~n", [method_not_allowed]),
             return_resource(Request, Content, State#state{observer=undefined});
         {error, Error} ->
+	    ?GLG_LOG("---> observe error:~p ~n", [Error]),
             return_response(Request, {error, Error}, State);
         {error, Error, Reason} ->
+	    ?GLD_LOG("---> observe error: ~p ~n", [{Error, Reason}]),
             return_response([], Request, {error, Error}, Reason, State)
     end;
-handle_observe(_ChId, Request, Content, State) ->
+handle_observe(ChId, Request, Content, State=#state{prefix=Prefix, module=Module}) ->
     % subsequent observe request from the same user
-    return_resource(Request, Content, State#state{observer=Request}).
+    ?GLD_LOG("---> observe subsequent observe request from the same user in self: ~p ~n", [self()]),
+    case invoke_callback(Module, coap_observe, [ChId, Prefix, uri_suffix(Prefix, Request), requires_ack(Request), Content]) of
+        {ok, ObState, NewContent} ->
+	    return_resource(Request, NewContent, State#state{observer=Request, obstate=ObState});
+        {ok, ObState, Code, NewContent} ->
+	    return_resource([], Request, {ok, Code}, NewContent, State#state{observer=Request, obstate=ObState});
+        {error, Error} ->
+	    ?GLD_LOG("---> observe error:~p ~n", [Error]),
+            return_response(Request, {error, Error}, State);
+        {error, Error, Reason} ->
+	    ?GLD_LOG("---> observe error:~p ~n", [{Error, Reason}]),
+            return_response([], Request, {error, Error}, Reason, State)
+    end.
+    %% return_resource(Request, Content, State#state{observer=Request}).
 
 requires_ack(#coap_message{type=con}) -> true;
 requires_ack(#coap_message{type=non}) -> false.
@@ -288,6 +319,7 @@ return_resource(Request, Content, State) ->
     return_resource([], Request, {ok, content}, Content, State).
 
 return_resource(Ref, Request=#coap_message{options=Options}, {ok, Code}, Content=#coap_content{etag=ETag}, State) ->
+    ?GLD_LOG("<--- return resource Ref: ~p~n", [Ref]),
     send_observable(Ref, Request,
         case lists:member(ETag, proplists:get_value(etag, Options, [])) of
             true ->
@@ -311,16 +343,19 @@ send_observable(Ref, #coap_message{token=Token, options=Options}, Response,
         {0, #coap_message{token=Token}} ->
             send_response(Ref, coap_message:set(observe, Seq, Response), State#state{obseq=next_seq(Seq)});
         _Else ->
+	    ?GLD_LOG("<--- return resource with no observe: Response: ~p~n", [Response]),
             send_response(Ref, Response, State)
     end.
 
 send_response(Ref, Response=#coap_message{options=Options},
         State=#state{channel=Channel, observer=Observer}) ->
-    %io:fwrite("<- ~p~n", [Response]),
+    %?GLD_LOG("<--- return response: ~p~n", [Response]),
+    ?GLD_LOG("<--- send to channel with  Observe: ~p, Response: ~p~n", [Observer,Response]),
     {ok, _} = coap_channel:send_response(Channel, Ref, Response),
     case Observer of
         #coap_message{} ->
             % notifications will follow
+	    ?GLD_LOG("<--- ~p~n", ["< keep living >,notifications will follow"]),
             {noreply, State};
         undefined ->
             case proplists:get_value(block2, Options) of
@@ -329,6 +364,7 @@ send_response(Ref, Response=#coap_message{options=Options},
                     set_timeout(?EXCHANGE_LIFETIME, State);
                 _Else ->
                     % no further communication concerning this request
+		    ?GLD_LOG("<--- ~p~n", ["< keep living > notifications will follow"]),
                     {stop, normal, State}
             end
     end.

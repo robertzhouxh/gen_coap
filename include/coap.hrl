@@ -11,3 +11,14 @@
 -type coap_content() :: #coap_content{}.
 
 -define(UDP_SOCKOPTS, []).
+
+-define(DEBUG, []).
+-ifdef(DEBUG).
+-define(GLD_LOG(Arg), io:format([?MODULE, ?FUNCTION_NAME, ?LINE, ??Arg, Arg]).
+-define(GLD_LOG(Fmt, Args), io:format("[~p:~p#~p]" ++ Fmt ++ "~n~n", [?MODULE, ?FUNCTION_NAME, ?LINE] ++ Args)).
+-define(ASSIGN(Var, Exp), Var = Exp, io:format("~s:~s -> ~p~n~n", [??Var, ??Exp, Var])).
+-else.
+-define(GLD_LOG(Fmt, Arg), ok).
+-define(GLD_LOG(Arg), ok).
+-define(ASSIGN(Var, Exp), Var = Exp).
+-endif.

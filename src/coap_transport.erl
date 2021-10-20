@@ -30,6 +30,7 @@ init(SendFun, ChId, Channel, TrId, ReSup, Receiver) ->
     #state{phase=idle, sendfun=SendFun, cid=ChId, channel=Channel, tid=TrId, resp=ReSup, receiver=Receiver}.
 % process incoming message
 received(BinMessage, State=#state{phase=Phase}) ->
+    ?GLD_LOG("phase: [~s] inMsg with state: ~p", [Phase, State]),
     ?MODULE:Phase({in, BinMessage}, State).
 % process outgoing message
 send(Message, State=#state{phase=Phase}) ->
@@ -53,6 +54,7 @@ idle(Msg={in, <<1:2, 1:2, _:12, _Tail/bytes>>}, State=#state{channel=Channel, ti
 % ->CON
 idle(Msg={in, <<1:2, 0:2, _:12, _Tail/bytes>>}, State=#state{channel=Channel, tid=TrId}) ->
     timeout_after(?EXCHANGE_LIFETIME, Channel, TrId, transport),
+    ?GLD_LOG("pahse:[idle](2.47 second timeout send msg to channel {timeout,x,x})Msg: ~p~n", [Msg]),
     in_con(Msg, State);
 % NON->
 idle(Msg={out, #coap_message{type=non}}, State=#state{channel=Channel, tid=TrId}) ->
@@ -84,7 +86,7 @@ got_non({in, _Message}, State) ->
 % --- outgoing NON
 
 out_non({out, Message}, State=#state{sendfun=SendFun, cid=ChId}) ->
-    %io:fwrite("~p <= ~p~n", [self(), Message]),
+    ?GLD_LOG("---> slef: ~p, Message: ~p~n", [self(), Message]),
     BinMessage = coap_message_parser:encode(Message),
     SendFun(ChId, BinMessage),
     next_state(sent_non, State).
@@ -98,6 +100,7 @@ sent_non({in, BinMessage}, State)->
     next_state(got_rst, State).
 
 got_rst({in, _BinMessage}, State)->
+    ?GLD_LOG("<-- ~s~n", [in_get_reset]),
     next_state(got_rst, State).
 
 % --- incoming CON->ACK|RST
@@ -108,9 +111,11 @@ in_con({in, BinMessage}, State) ->
             % provoked reset
             go_pack_sent(#coap_message{type=reset, id=MsgId}, State);
         #coap_message{method=Method} = Message when is_atom(Method) ->
+	    ?GLD_LOG("handle in_con request: ~p~n", [Message]),
             handle_request(Message, State),
             go_await_aack(Message, State);
         #coap_message{} = Message ->
+	    ?GLD_LOG("handle in-con response: ~p~n", [Message]),
             handle_response(Message, State),
             go_await_aack(Message, State);
         {error, Error} ->
@@ -122,17 +127,19 @@ in_con({in, BinMessage}, State) ->
 go_await_aack(Message, State) ->
     % we may need to ack the message
     BinAck = coap_message_parser:encode(coap_message:response(Message)),
+    ?GLD_LOG("go_await_aack with BinAck:  ~s, enter into phase[await_aack] state ~n", [BinAck]),
     next_state(await_aack, State#state{msg=BinAck}, ?PROCESSING_DELAY).
 
 await_aack({in, _BinMessage}, State) ->
     % ignore request retransmission
     next_state(await_aack, State);
 await_aack({timeout, await_aack}, State=#state{sendfun=SendFun, cid=ChId, msg=BinAck}) ->
-    %io:fwrite("~p <- ack [application didn't respond]~n", [self()]),
+    ?GLD_LOG("~p <- ack [application didn't respond], process timeout just send  BinAck: ~s, enter into phase[ pack_sent] ~n", [self(), BinAck]),
     SendFun(ChId, BinAck),
     next_state(pack_sent, State);
 await_aack({out, Ack}, State) ->
     % set correct type for a piggybacked response
+    ?GLD_LOG("<--- app send response:  ~p <- ack  ~n", [self()]),
     Ack2 = case Ack of
         #coap_message{type=con} -> Ack#coap_message{type=ack};
         Else -> Else
@@ -140,23 +147,25 @@ await_aack({out, Ack}, State) ->
     go_pack_sent(Ack2, State).
 
 go_pack_sent(Ack, State=#state{sendfun=SendFun, cid=ChId}) ->
-    %io:fwrite("~p <- ~p~n", [self(), Ack]),
+    ?GLD_LOG("<--- send response: ~p <- ~p, enter into phase[ pack_sent]~n", [self(), Ack]),
     BinAck = coap_message_parser:encode(Ack),
     SendFun(ChId, BinAck),
     next_state(pack_sent, State#state{msg=BinAck}).
 
 pack_sent({in, _BinMessage}, State=#state{sendfun=SendFun, cid=ChId, msg=BinAck}) ->
     % retransmit the ack
+    ?GLD_LOG("retransmit the ack in Self: ~p~n", [self()]),
     SendFun(ChId, BinAck),
     next_state(pack_sent, State);
 pack_sent({timeout, await_aack}, State) ->
     % ignore this timeout since it is produced by a race condition
+    ?GLD_LOG("ignore this timeout since it is produced by a race condition~p, keep pack_sent ~n", [self()]),
     next_state(pack_sent, State).
 
 % --- outgoing CON->ACK|RST
 
 out_con({out, Message}, State=#state{sendfun=SendFun, cid=ChId}) ->
-    %io:fwrite("~p, <= ~p~n", [self(), Message]),
+    ?GLD_LOG("~p, <= ~p~n", [self(), Message]),
     BinMessage = coap_message_parser:encode(Message),
     SendFun(ChId, BinMessage),
     _ = rand:seed(exs1024),
@@ -199,7 +208,7 @@ timeout_after(Time, Channel, TrId, Event) ->
     erlang:send_after(Time, Channel, {timeout, TrId, Event}).
 
 handle_request(Message, #state{cid=ChId, channel=Channel, resp=ReSup, receiver=undefined}) ->
-    %io:fwrite("~p => ~p~n", [self(), Message]),
+    ?GLD_LOG("~p => ~p~n", [self(), Message]),
     case coap_responder_sup:get_responder(ReSup, Message) of
         {ok, Pid} ->
             Pid ! {coap_request, ChId, Channel, undefined, Message},
@@ -210,22 +219,22 @@ handle_request(Message, #state{cid=ChId, channel=Channel, resp=ReSup, receiver=u
             ok
     end;
 handle_request(Message, #state{cid=ChId, channel=Channel, receiver={Sender, Ref}}) ->
-    %io:fwrite("~p => ~p~n", [self(), Message]),
+    ?GLD_LOG("handle_request: recevier={Sender=self(), Ref} ~p~n", [{Sender, Ref}]),
     Sender ! {coap_request, ChId, Channel, Ref, Message},
     ok.
 
 handle_response(Message, #state{cid=ChId, channel=Channel, receiver={Sender, Ref}}) ->
-    %io:fwrite("~p -> ~p~n", [self(), Message]),
+    ?GLD_LOG("handle_response: recevier={Sender,Ref} ~p~n", [{Sender, Ref}]),
     Sender ! {coap_response, ChId, Channel, Ref, Message},
     request_complete(Channel, Message).
 
 handle_error(Message, Error, #state{cid=ChId, channel=Channel, receiver={Sender, Ref}}) ->
-    %io:fwrite("~p -> ~p~n", [self(), Message]),
+    ?GLD_LOG("handle_error: recevier: ~p~n", [{Sender, Ref}]),
     Sender ! {coap_error, ChId, Channel, Ref, Error},
     request_complete(Channel, Message).
 
 handle_ack(_Message, #state{cid=ChId, channel=Channel, receiver={Sender, Ref}}) ->
-    %io:fwrite("~p -> ~p~n", [self(), Message]),
+    ?GLD_LOG("handle_ack: recevier={Sender,Ref} ~p~n", [{Sender, Ref}]),
     Sender ! {coap_ack, ChId, Channel, Ref},
     ok.
 

@@ -98,28 +98,34 @@ handle_call(_Unknown, _From, State) ->
 
 % outgoing CON(0) or NON(1) request
 handle_cast({send_request, Message, Receiver}, State) ->
+    ?GLD_LOG("---> send request for receiver ~p~n", [Receiver]),
     transport_new_request(Message, Receiver, State);
 % outgoing CON(0) or NON(1)
 handle_cast({send_message, Message, Receiver}, State) ->
+    ?GLD_LOG("<--- send response for receiver ~p~n", [Receiver]),
     transport_new_message(Message, Receiver, State);
 % outgoing response, either CON(0) or NON(1), piggybacked ACK(2) or RST(3)
 handle_cast({send_response, Message, Receiver}, State) ->
+    ?GLD_LOG("<--- send response with ack and rst piggybacked for receiver ~p~n", [Receiver]),
     transport_response(Message, Receiver, State);
 handle_cast(shutdown, State) ->
     {stop, normal, State};
 handle_cast(Request, State) ->
-    io:fwrite("coap_channel unknown cast ~p~n", [Request]),
+    ?GLD_LOG("---> coap_channel unknown cast request: ~p~n", [Request]),
     {noreply, State}.
 
 transport_new_request(Message, Receiver, State=#state{tokens=Tokens}) ->
     Token = crypto:strong_rand_bytes(4), % shall be at least 32 random bits
+    ?GLD_LOG("---> store token ~s for Receiver : ~p~n", [Token, Receiver]),
     Tokens2 = dict:store(Token, Receiver, Tokens),
     transport_new_message(Message#coap_message{token=Token}, Receiver, State#state{tokens=Tokens2}).
 
 transport_new_message(Message, Receiver, State=#state{nextmid=MsgId}) ->
+    ?GLD_LOG("<--- spawn out Message: with s for Receiver : ~p~n", [Receiver]),
     transport_message({out, MsgId}, Message#coap_message{id=MsgId}, Receiver, State#state{nextmid=next_mid(MsgId)}).
 
 transport_message(TrId, Message, Receiver, State) ->
+    ?GLD_LOG("---> ~s for recevier:~p ~n", [awaits_response_true, Receiver]),
     update_state(State, TrId,
         coap_transport:send(Message, create_transport(TrId, Receiver, State))).
 
@@ -128,9 +134,11 @@ transport_response(Message=#coap_message{id=MsgId}, Receiver, State=#state{trans
         {ok, TrState} ->
             case coap_transport:awaits_response(TrState) of
                 true ->
+		    ?GLD_LOG("~s~n", [awaits_response_true]),
                     update_state(State, {in, MsgId},
                         coap_transport:send(Message, TrState));
                 false ->
+		    ?GLD_LOG("~s~n", [awaits_response_false]),
                     transport_new_message(Message, Receiver, State)
             end;
         error ->
@@ -151,13 +159,16 @@ handle_info({timeout, TrId, Event}, State=#state{trans=Trans}) ->
         end);
 
 handle_info({request_complete, Token}, State=#state{tokens=Tokens}) ->
+    ?GLD_LOG("---> request complete in ~p , just delete token：~s~n", [self(), Token]),
     Tokens2 = dict:erase(Token, Tokens),
     purge_state(State#state{tokens=Tokens2});
 
 handle_info({responder_started}, State=#state{rescnt=Count}) ->
+    ?GLD_LOG("---> responder_started ---> responder count=~p + 1~n", [Count]),
     purge_state(State#state{rescnt=Count+1});
 
 handle_info({responder_completed}, State=#state{rescnt=Count}) ->
+    ?GLD_LOG("---> responder_gameover ---> rescnt=~p - 1~n", [Count]),
     purge_state(State#state{rescnt=Count-1});
 
 handle_info({inet_reply, _Sock, ok}, State) ->
@@ -167,13 +178,14 @@ handle_info({ssl_closed, _Sock}, State) ->
     {stop, normal, State};
 
 handle_info(Info, State) ->
-    io:fwrite("unexpected massage ~p~n", [Info]),
+    ?GLD_LOG("---> unexpected massage info:  ~p~n", [Info]),
     {noreply, State}.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 terminate(_Reason, #state{cid=_ChId}) ->
+    ?GLD_LOG("---> channle: ~p exit!!! ~n", [self()]),
     ok.
 
 %%--------------------------------------------------------------------
@@ -191,16 +203,18 @@ handle_datagram(BinMessage= <<?VERSION:2, 0:1, _:1, TKL:4, _Code:8, MsgId:16, To
     TrId = {in, MsgId},
     case dict:find(TrId, Trans) of
         {ok, TrState} ->
-            update_state(State, TrId, coap_transport:received(BinMessage, TrState));
+	    ?GLD_LOG("<--- recv binMessage： ~p for trid~n", [BinMessage]),
+	    update_state(State, TrId, coap_transport:received(BinMessage, TrState));
         error ->
             case dict:find(Token, Tokens) of
                 {ok, Receiver} ->
+                    ?GLD_LOG("<--- got token\'s  recevier: ~p ~n", [Receiver]),
                     update_state(State, TrId,
                         coap_transport:received(BinMessage, init_transport(TrId, Receiver, State)));
                 error ->
                     % token was not recognized
                     BinReset = coap_message_parser:encode(#coap_message{type=reset, id=MsgId}),
-                    io:fwrite("<- reset~n"),
+                    ?GLD_LOG("<--- reset with:  ~p ~n", [BinReset]),
                     esockd_send(Socket, ChId, BinReset)
             end
     end;
@@ -211,7 +225,9 @@ handle_datagram(BinMessage= <<?VERSION:2, _:2, _TKL:4, _Code:8, MsgId:16, _/byte
     update_state(State, TrId,
         case dict:find(TrId, Trans) of
             error -> undefined; % ignore unexpected responses
-            {ok, TrState} -> coap_transport:received(BinMessage, TrState)
+            {ok, TrState} -> 
+		?GLD_LOG("---> recv ACK for TrId: ~p", [TrId]),
+		coap_transport:received(BinMessage, TrState)
         end);
 % silently ignore other versions
 handle_datagram(<<Ver:2, _/bytes>>, State) when Ver /= ?VERSION ->
@@ -243,16 +259,22 @@ init_transport(TrId, Receiver, #state{sock=Socket, cid=ChId}) ->
     coap_transport:init(sendfun(Socket), ChId, self(), TrId, undefined, Receiver).
 
 update_state(State=#state{trans=Trans}, TrId, undefined) ->
+    ?GLD_LOG("store and update TrId: ~p \'s trstate： ~p~n", [TrId, undefined]),
     Trans2 = dict:erase(TrId, Trans),
     purge_state(State#state{trans=Trans2});
 update_state(State=#state{trans=Trans}, TrId, TrState) ->
+    ?GLD_LOG("store and delete TrId: ~p \s trstate： ~p~n", [TrId, TrState]),
     Trans2 = dict:store(TrId, TrState, Trans),
     {noreply, State#state{trans=Trans2}}.
 
 purge_state(State=#state{tokens=Tokens, trans=Trans, rescnt=Count}) ->
     case dict:size(Tokens)+dict:size(Trans)+Count of
-        0 -> {stop, normal, State};
-        _Else -> {noreply, State}
+        0 -> 
+	    ?GLD_LOG("~p!!!~n", [stop]),
+	    {stop, normal, State};
+        _Else -> 
+	    ?GLD_LOG("---> noreply, just continue tokens: ~p, responderConut: ~p~n", [Tokens,Count]),
+	    {noreply, State}
     end.
 
 exit_on_sock_error(Reason) when Reason =:= einval;

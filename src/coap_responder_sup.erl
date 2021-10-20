@@ -20,19 +20,50 @@ start_link() ->
 get_responder(SupPid, Request) ->
     case start_responder(SupPid, Request) of
         {ok, Pid} -> {ok, Pid};
-        {error, {already_started, Pid}} -> {ok, Pid};
-        {error, Other} -> {error, Other}
+        {error, {already_started, Pid}} -> 
+	    ?GLD_LOG("---> pid=~p already-started ~n", [Pid]),
+	    {ok, Pid};
+        {error, Other} -> 
+	    ?GLD_LOG("---> start err:~p~n", [Other]),
+	    {error, Other}
     end.
 
-start_responder(SupPid, #coap_message{method=Method, options=Options}) ->
+start_responder(SupPid, #coap_message{method=_Method, options=Options}) ->
     Uri = proplists:get_value(uri_path, Options, []),
-    Query = proplists:get_value(uri_query, Options, []),
+    [Query] = proplists:get_value(uri_query, Options, []),
+    [DevId] = get_meta(Uri, Query),
+    ?GLD_LOG("---> try to start coap_responder for devid: ~s~n", [DevId]),
     supervisor:start_child(SupPid,
-        {{Method, Uri, Query},
+        {DevId,
             {coap_responder, start_link, [self(), Uri]},
             temporary, 5000, worker, []}).
 
 init([]) ->
+    pg:start_link(),
     {ok, {{one_for_one, 3, 10}, []}}.
+
+get_meta([<<"mqtt">>, <<"auth">>], Query) -> 
+    ?GLD_LOG("---> get_meta for auth, query=~s ~n", [Query]),
+    Qry = binary:split(Query,<<$&>>,[global]),
+    get_auth(Qry, []);
+get_meta([<<"mqtt">>, <<"sys">>, _ModelId, DevId, _Action|_], _) -> [DevId];
+get_meta([_|_], Query) -> 
+    ?GLD_LOG("---> invalid uri just use query=~p ~n", [Query]),
+    [Query].
+
+
+get_auth([], Acc) -> Acc;
+get_auth([<<$u, $=, Rest/binary>>|_], Acc) -> 
+    U = cow_uri:urldecode(Rest),
+    case binary:split(U,<<$&>>,[global]) of
+	[DevId,_PrdId,_Ts] -> 
+	    [DevId|Acc];
+	_ -> 
+	    ?GLD_LOG("-> can not find DevId for u=~s ~n", [U]),
+	    Acc
+    end;
+get_auth([_|T], Acc) ->
+    get_auth(T, Acc).
+
 
 % end of file
