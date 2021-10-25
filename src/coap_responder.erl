@@ -229,7 +229,7 @@ handle_observe(ChId, Request=#coap_message{options=Options}, Content=#coap_conte
 	    ?GLD_LOG("---> observe ~s ~n", [method_not_allowed]),
             return_resource(Request, Content, State#state{observer=undefined});
         {error, Error} ->
-	    ?GLG_LOG("---> observe error:~p ~n", [Error]),
+	    ?GLD_LOG("---> observe error:~p ~n", [Error]),
             return_response(Request, {error, Error}, State);
         {error, Error, Reason} ->
 	    ?GLD_LOG("---> observe error: ~p ~n", [{Error, Reason}]),
