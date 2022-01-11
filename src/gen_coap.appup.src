@@ -1,14 +1,15 @@
 %% -*-: erlang -*-
-{"0.3.2",
-  [
-   {"0.2.1", [ %% 0.2.1 is actually tagged as 0.3.1 on github
-    {load_module, coap_channel, brutal_purge, soft_purge, []}
-   ]},
-   {<<".*">>, []}],
-  [
-   {"0.2.1", [
-    {load_module, coap_channel, brutal_purge, soft_purge, []}
-   ]},
-   {<<".*">>, []}
-  ]
+{"0.4.2",
+   [
+    {<<"0\\.4\\.[0-1]*">>,
+     [{load_module,coap_client,brutal_purge,soft_purge,[]},
+      {load_module,core_link,brutal_purge,soft_purge,[]}]},
+    {<<".*">>, []}
+   ],
+   [
+    {<<"0\\.4\\.[0-1]*">>,
+     [{load_module,coap_client,brutal_purge,soft_purge,[]},
+      {load_module,core_link,brutal_purge,soft_purge,[]}]},
+    {<<".*">>, []}
+   ]
 }.
