@@ -12,8 +12,8 @@
 
 -define(UDP_SOCKOPTS, []).
 
-%-define(DEBUG, []).
--ifdef(DEBUG).
+-define(DEBUG_LIB, []).
+-ifdef(DEBUG_LIG).
 -define(GLD_LOG(Arg), io:format([?MODULE, ?FUNCTION_NAME, ?LINE, ??Arg, Arg]).
 -define(GLD_LOG(Fmt, Args), io:format("[~p:~p#~p]" ++ Fmt ++ "~n~n", [?MODULE, ?FUNCTION_NAME, ?LINE] ++ Args)).
 -else.
