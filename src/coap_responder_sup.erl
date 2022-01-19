@@ -18,6 +18,7 @@ start_link() ->
     supervisor:start_link(?MODULE, []).
 
 get_responder(SupPid, Request) ->
+    ?GLD_LOG("---> get responder for Request: ~p ~n", [Request]),
     case start_responder(SupPid, Request) of
         {ok, Pid} -> {ok, Pid};
         {error, {already_started, Pid}} -> 
@@ -32,7 +33,7 @@ start_responder(SupPid, #coap_message{method=_Method, options=Options}) ->
     Uri = proplists:get_value(uri_path, Options, []),
     [Query] = proplists:get_value(uri_query, Options, []),
     [DevId] = get_meta(Uri, Query),
-    ?GLD_LOG("---> try to start coap_responder for devid: ~s~n", [DevId]),
+    ?GLD_LOG("---> try to start coap_responder for devid: ~s with Uri: ~s in SupPid: ~p <<< OriginDevId: ~p, OriginUri: ~p >>> ~n~n", [DevId, Uri, SupPid, DevId, Uri]),
     supervisor:start_child(SupPid,
         {DevId,
             {coap_responder, start_link, [self(), Uri]},
