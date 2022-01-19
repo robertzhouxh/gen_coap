@@ -81,6 +81,7 @@ init([Socket, ChId]) ->
     % we want to get called upon termination
     process_flag(trap_exit, true),
     % start the responder sup
+    ?GLD_LOG("---> coap_responder_sup starting -------------------> for Sockert: ~p, ChId: ~p ~n", [Socket, ChId]),
     {ok, ReSup} = coap_responder_sup:start_link(),
     % wait socket ready
     case esockd_wait(Socket) of
